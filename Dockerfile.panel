@@ -1,0 +1,22 @@
+# Imagen del panel web (panel.py). Liviana: no lleva Whisper ni el bot de Telegram.
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY requirements-panel.txt .
+RUN pip install --no-cache-dir -r requirements-panel.txt
+
+COPY bot/ ./bot/
+COPY panel.py .
+COPY .streamlit/ ./.streamlit/
+
+# corre sin permisos de administrador
+RUN useradd --create-home panel
+USER panel
+
+EXPOSE 8501
+HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"
+
+# 0.0.0.0: acepta conexiones de Caddy (el puerto no se publica afuera del servidor).
+# showErrorDetails=none: si algo falla, el usuario no ve detalles internos (quedan en los logs).
+CMD ["python", "-m", "streamlit", "run", "panel.py", "--server.address=0.0.0.0", "--client.showErrorDetails=none"]

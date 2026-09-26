@@ -1,0 +1,13 @@
+# Caddy saca y renueva solo el certificado HTTPS (Let's Encrypt) para el dominio,
+# y le pasa todo al panel (incluida la conexión en vivo que usa Streamlit).
+{$PANEL_DOMINIO} {
+	encode gzip
+	reverse_proxy panel:8501
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		# el link de acceso lleva el token: que no se filtre a otros sitios
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}

@@ -1,0 +1,17 @@
+# Configuración del panel web (panel.py).
+# Así queda para probarlo en la PC (solo se abre desde esta misma compu).
+# En el servidor, el Dockerfile.panel lo abre a la red y oculta los detalles de los errores.
+
+[server]
+headless = true
+address = "localhost"
+port = 8501
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+primaryColor = "#4a7c2a"

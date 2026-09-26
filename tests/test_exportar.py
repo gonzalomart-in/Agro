@@ -68,3 +68,19 @@ def test_calcular_fecha_desde_dias():
 
 def test_calcular_fecha_desde_none():
     assert calcular_fecha_desde(None) is None
+
+
+def test_lista_vacia_confirmada_se_exporta_como_sin_presencia():
+    df = registros_a_dataframe([_registro(plagas=json.dumps([]), sin_plagas=True)])
+    assert df.iloc[0]["plagas"] == "Sin presencia"
+
+
+def test_lista_vacia_no_confirmada_queda_vacia():
+    df = registros_a_dataframe([_registro(plagas=json.dumps([]), sin_plagas=False)])
+    assert df.iloc[0]["plagas"] == ""
+
+
+def test_exporta_provincia_y_visita():
+    df = registros_a_dataframe([_registro(provincia="Buenos Aires", visita_id=5)])
+    assert df.iloc[0]["provincia"] == "Buenos Aires"
+    assert df.iloc[0]["visita_id"] == 5

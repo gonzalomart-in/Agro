@@ -26,6 +26,11 @@ class Config:
     ollama_model: str
     whisper_model: str
     admin_user_ids: list[int] = field(default_factory=list)
+    # dirección del panel web (ej. https://agro-panel.duckdns.org); sin esto /panel no da links
+    panel_url: str | None = None
+    # cuánto queda el modelo cargado en memoria entre audios (Ollama lo descarga a los 5 minutos
+    # si no se le dice nada); "-1" = siempre cargado, para el servidor que tiene RAM de sobra
+    ollama_keep_alive: str = "30m"
 
     @classmethod
     def desde_entorno(cls) -> "Config":
@@ -42,6 +47,8 @@ class Config:
             ollama_model=os.environ.get("OLLAMA_MODEL", "qwen2.5:7b"),
             whisper_model=os.environ.get("WHISPER_MODEL", "base"),
             admin_user_ids=_parse_id_list(os.environ.get("ADMIN_USER_IDS", "")),
+            panel_url=os.environ.get("PANEL_URL", "").strip() or None,
+            ollama_keep_alive=os.environ.get("OLLAMA_KEEP_ALIVE", "").strip() or "30m",
         )
 
 

@@ -1,46 +1,61 @@
+# Todo el sistema en el servidor (Oracle Cloud): el bot, el modelo de lenguaje (Ollama),
+# el panel web y Caddy (que le pone HTTPS al panel). La base de datos sigue en Neon.
+#
+# Uso (en el servidor, dentro de la carpeta Agro, con el .env completo; ver deploy/ORACLE.md):
+#   docker compose up -d --build
 services:
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: agro
-      POSTGRES_PASSWORD: agro
-      POSTGRES_DB: agro
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agro"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   ollama:
     image: ollama/ollama
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
+    # arranca Ollama y se asegura de tener el modelo (la primera vez lo descarga)
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         ollama serve &
-        sleep 3
-        ollama pull ${OLLAMA_MODEL:-qwen2.5:7b}
+        sleep 5
+        ollama pull ${OLLAMA_MODEL:-qwen2.5:3b}
         wait
 
   bot:
     build: .
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      ollama:
-        condition: service_started
-    env_file:
-      - .env
+      - ollama
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql://agro:agro@postgres:5432/agro
       OLLAMA_HOST: http://ollama:11434
+      PANEL_URL: https://${PANEL_DOMINIO:?Falta PANEL_DOMINIO en el .env}
+    volumes:
+      - whisper_cache:/cache
+
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile.panel
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "8501"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - panel
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PANEL_DOMINIO: ${PANEL_DOMINIO:?Falta PANEL_DOMINIO en el .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
-  postgres_data:
   ollama_data:
+  whisper_cache:
+  caddy_data:
+  caddy_config:

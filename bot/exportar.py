@@ -12,7 +12,9 @@ ZONA_ARGENTINA = ZoneInfo("America/Argentina/Buenos_Aires")
 
 COLUMNAS_ORDEN = [
     "id",
+    "visita_id",
     "fecha_hora",
+    "provincia",
     "localidad",
     "lote",
     "cultivo",
@@ -35,13 +37,14 @@ COLUMNAS_ORDEN = [
 ]
 
 
-def _aplanar_items(valor, campos: list[str]) -> str:
-    """Convierte una lista JSONB de items (malezas/plagas/enfermedades) a texto plano."""
-    if valor is None:
-        return ""
+def _aplanar_items(valor, campos: list[str], sin_presencia: bool = False) -> str:
+    """Convierte una lista JSONB de items (malezas/plagas/enfermedades) a texto plano.
+
+    Lista vacía: "Sin presencia" si el técnico lo confirmó, o "" si no informó nada.
+    """
     items = json.loads(valor) if isinstance(valor, str) else valor
     if not items:
-        return ""
+        return "Sin presencia" if sin_presencia else ""
     lineas = []
     for item in items:
         partes = [str(item.get("nombre", ""))]
@@ -67,9 +70,15 @@ def registros_a_dataframe(registros: list[dict]) -> pd.DataFrame:
     for r in registros:
         fila = dict(r)
         fila["fecha_hora"] = _fecha_hora_argentina_sin_tz(fila["fecha_hora"])
-        fila["malezas"] = _aplanar_items(fila.get("malezas"), ["tamano", "porcentaje_cobertura"])
-        fila["plagas"] = _aplanar_items(fila.get("plagas"), ["cantidad_por_metro_lineal", "porcentaje_dano"])
-        fila["enfermedades"] = _aplanar_items(fila.get("enfermedades"), ["porcentaje_incidencia", "severidad"])
+        fila["malezas"] = _aplanar_items(
+            fila.get("malezas"), ["tamano", "porcentaje_cobertura"], bool(fila.get("sin_malezas"))
+        )
+        fila["plagas"] = _aplanar_items(
+            fila.get("plagas"), ["cantidad_por_metro_lineal", "porcentaje_dano"], bool(fila.get("sin_plagas"))
+        )
+        fila["enfermedades"] = _aplanar_items(
+            fila.get("enfermedades"), ["porcentaje_incidencia", "severidad"], bool(fila.get("sin_enfermedades"))
+        )
         filas.append(fila)
 
     df = pd.DataFrame(filas)
