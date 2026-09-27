@@ -21,6 +21,15 @@ CREATE TABLE IF NOT EXISTS usuarios_permitidos (
     creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS clientes (
+    id SERIAL PRIMARY KEY,
+    telegram_user_id BIGINT NOT NULL,
+    nombre TEXT NOT NULL,
+    creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS clientes_usuario_nombre
+    ON clientes (telegram_user_id, lower(nombre));
+
 CREATE TABLE IF NOT EXISTS lotes (
     id SERIAL PRIMARY KEY,
     telegram_user_id BIGINT NOT NULL,
@@ -30,6 +39,7 @@ CREATE TABLE IF NOT EXISTS lotes (
     ensayo_habitual TEXT,
     creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE lotes ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id);
 
 CREATE TABLE IF NOT EXISTS recorridas (
     id SERIAL PRIMARY KEY,
@@ -117,7 +127,8 @@ CAMPOS_RECORRIDA_EDITABLES = (
     "malezas", "plagas", "enfermedades", "sin_malezas", "sin_plagas", "sin_enfermedades", "aplicaciones",
 )
 _CAMPOS_JSON = ("malezas", "plagas", "enfermedades", "aplicaciones")
-CAMPOS_LOTE_EDITABLES = ("nombre", "localidad", "cultivo_habitual", "ensayo_habitual")
+CAMPOS_LOTE_EDITABLES = ("nombre", "localidad", "cultivo_habitual", "ensayo_habitual", "cliente_id")
+CAMPOS_CLIENTE_EDITABLES = ("nombre",)
 
 
 def _set_de_cambios(cambios: dict, permitidos: tuple[str, ...], primer_parametro: int) -> tuple[str, list]:
@@ -212,12 +223,59 @@ class BaseDeDatos:
             )
             return resultado != "DELETE 0"
 
+    # ---- clientes ----
+
+    async def listar_clientes(self, telegram_user_id: int) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as con:
+            return await con.fetch(
+                "SELECT * FROM clientes WHERE telegram_user_id = $1 ORDER BY lower(nombre)",
+                telegram_user_id,
+            )
+
+    async def crear_cliente(self, telegram_user_id: int, nombre: str) -> int:
+        """Crea el cliente, o devuelve el id del que ya existía con ese nombre para ese usuario."""
+        async with self.pool.acquire() as con:
+            fila = await con.fetchrow(
+                """
+                INSERT INTO clientes (telegram_user_id, nombre) VALUES ($1, $2)
+                ON CONFLICT (telegram_user_id, lower(nombre)) DO UPDATE SET nombre = clientes.nombre
+                RETURNING id
+                """,
+                telegram_user_id,
+                nombre,
+            )
+            return fila["id"]
+
+    async def listar_clientes_panel(self, de_usuario: int | None) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as con:
+            return await con.fetch(
+                "SELECT * FROM clientes WHERE ($1::bigint IS NULL OR telegram_user_id = $1) ORDER BY lower(nombre)",
+                de_usuario,
+            )
+
+    async def actualizar_cliente(self, cliente_id: int, cambios: dict, de_usuario: int | None) -> bool:
+        if not cambios:
+            return True
+        sets, valores = _set_de_cambios(cambios, CAMPOS_CLIENTE_EDITABLES, 3)
+        async with self.pool.acquire() as con:
+            resultado = await con.execute(
+                f"UPDATE clientes SET {sets} WHERE id = $1 AND ($2::bigint IS NULL OR telegram_user_id = $2)",
+                cliente_id,
+                de_usuario,
+                *valores,
+            )
+        return resultado != "UPDATE 0"
+
     # ---- lotes ----
 
     async def listar_lotes(self, telegram_user_id: int) -> list[asyncpg.Record]:
         async with self.pool.acquire() as con:
             return await con.fetch(
-                "SELECT * FROM lotes WHERE telegram_user_id = $1 ORDER BY nombre",
+                """
+                SELECT l.*, c.nombre AS cliente
+                FROM lotes l LEFT JOIN clientes c ON c.id = l.cliente_id
+                WHERE l.telegram_user_id = $1 ORDER BY l.nombre
+                """,
                 telegram_user_id,
             )
 
@@ -228,12 +286,13 @@ class BaseDeDatos:
         localidad: str | None = None,
         cultivo_habitual: str | None = None,
         ensayo_habitual: str | None = None,
+        cliente_id: int | None = None,
     ) -> int:
         async with self.pool.acquire() as con:
             fila = await con.fetchrow(
                 """
-                INSERT INTO lotes (telegram_user_id, nombre, localidad, cultivo_habitual, ensayo_habitual)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO lotes (telegram_user_id, nombre, localidad, cultivo_habitual, ensayo_habitual, cliente_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id
                 """,
                 telegram_user_id,
@@ -241,6 +300,7 @@ class BaseDeDatos:
                 localidad,
                 cultivo_habitual,
                 ensayo_habitual,
+                cliente_id,
             )
             return fila["id"]
 
@@ -524,7 +584,11 @@ class BaseDeDatos:
     async def listar_lotes_panel(self, de_usuario: int | None) -> list[asyncpg.Record]:
         async with self.pool.acquire() as con:
             return await con.fetch(
-                "SELECT * FROM lotes WHERE ($1::bigint IS NULL OR telegram_user_id = $1) ORDER BY lower(nombre)",
+                """
+                SELECT l.*, c.nombre AS cliente
+                FROM lotes l LEFT JOIN clientes c ON c.id = l.cliente_id
+                WHERE ($1::bigint IS NULL OR l.telegram_user_id = $1) ORDER BY lower(l.nombre)
+                """,
                 de_usuario,
             )
 

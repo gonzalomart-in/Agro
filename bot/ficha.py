@@ -1,7 +1,16 @@
 """Cálculo de stand y formateo de las fichas legibles para Telegram."""
 from __future__ import annotations
 
-from .modelos import Aplicacion, CabeceraLote, EstadoAplicacion, Hibrido, RecorridaAudio, etiqueta_material, normalizar_texto
+from .modelos import (
+    Aplicacion,
+    CabeceraLote,
+    EstadoAplicacion,
+    Hibrido,
+    RecorridaAudio,
+    UmbralDanoEconomico,
+    etiqueta_material,
+    normalizar_texto,
+)
 
 NOMBRES_CAMPOS_CLAVE = {
     "localidad": "Localidad",
@@ -111,8 +120,6 @@ def _lineas_cabecera(cabecera: CabeceraLote) -> list[str]:
     ]
     if cabecera.estadio_fenologico:
         lineas.append(f"📈 Estadio fenológico: {cabecera.estadio_fenologico}")
-    if cabecera.latitud is not None and cabecera.longitud is not None:
-        lineas.append(f"📌 Ubicación: {cabecera.latitud}, {cabecera.longitud}")
     return lineas
 
 
@@ -253,37 +260,9 @@ def _resumen_de_lista(items: list, corto, confirmado_ausente: bool) -> str:
     return "✅ no hay" if confirmado_ausente else "❓"
 
 
-def _recortar(texto: str, largo: int = 40) -> str:
-    return texto if len(texto) <= largo else texto[: largo - 1] + "…"
-
-
-def _linea_hibrido_compacta(numero: int, h: Hibrido, marca: str = "") -> str:
-    """Una línea con todo lo cargado de un híbrido: para revisar sin abrir el borrador."""
-    if h.stand_valor is not None:
-        unidad = _UNIDAD_CORTA.get(h.stand_unidad.value, h.stand_unidad.value) if h.stand_unidad else ""
-        stand = f"stand {_numero(h.stand_valor)} {unidad}".strip()
-    else:
-        stand = "stand ❓"
-    partes = [
-        stand,
-        f"estado {h.estado_cultivo}" if h.estado_cultivo else "estado ❓",
-        "🌾 " + _resumen_de_lista(h.malezas, _corto_maleza, h.sin_malezas),
-        "🐛 " + _resumen_de_lista(h.plagas, _corto_plaga, h.sin_plagas),
-        "🦠 " + _resumen_de_lista(h.enfermedades, _corto_enfermedad, h.sin_enfermedades),
-    ]
-    if h.umbral_dano_economico.value != "no_evaluado":
-        partes.append(f"umbral {h.umbral_dano_economico.value}")
-    if h.acciones:
-        partes.append(f"acciones: {_recortar(h.acciones)}")
-    if h.aplicaciones:
-        partes.append("🧴 " + ", ".join(_corto_aplicacion(a) for a in h.aplicaciones))
-    if h.comentarios:
-        partes.append(f"💬 {_recortar(h.comentarios)}")
-    return f"{numero}. {marca}{h.hibrido_variedad or 'sin nombre'} — " + " · ".join(partes)
-
-
 def _linea_generales(audio: RecorridaAudio, con_productos: bool = True) -> str:
-    """Lo que el técnico dijo del lote entero (vale para los híbridos que no informaron lo suyo)."""
+    """Lo que el técnico dijo del lote entero (vale para los híbridos que no informaron lo suyo).
+    Se usa en `formatear_borrador` (el detalle completo, con /borrador)."""
     partes = []
     for icono, items, corto, sin in (
         ("🌾", audio.malezas, _corto_maleza, audio.sin_malezas),
@@ -293,72 +272,82 @@ def _linea_generales(audio: RecorridaAudio, con_productos: bool = True) -> str:
         if items or sin:
             partes.append(f"{icono} {_resumen_de_lista(items, corto, sin)}")
     if audio.acciones:
-        partes.append(f"acciones: {_recortar(audio.acciones)}")
+        partes.append(f"acciones: {audio.acciones}")
     if audio.aplicaciones and con_productos:
         partes.append("🧴 " + ", ".join(_corto_aplicacion(a) for a in audio.aplicaciones))
     if audio.comentarios:
-        partes.append(f"💬 {_recortar(audio.comentarios)}")
+        partes.append(f"💬 {audio.comentarios}")
     return ("🌐 Para todo el lote: " + " · ".join(partes)) if partes else ""
 
 
-def resumen_borrador(
-    audio: RecorridaAudio,
-    abierta: CabeceraLote | None,
-    agregados: list[str],
-    actualizados: list[str],
-) -> str:
-    """Resumen corto que se muestra después de cada audio (el detalle está en /borrador)."""
-    cabecera = audio.completar_con(abierta)
-    singular, plural = etiqueta_material(cabecera.cultivo)
-    hibridos = audio.hibridos_efectivos()
+def _agregar(lineas: list[str], etiqueta: str, valor) -> None:
+    if valor:
+        lineas.append(f"{etiqueta}: {valor}")
 
+
+def _lineas_relevamientos_simple(obj) -> list[str]:
+    """Malezas, plagas y enfermedades de un híbrido o de todo el lote, una línea por tipo."""
     lineas = []
-    novedades = []
-    if agregados:
-        novedades.append(f"+{len(agregados)} {singular}(s): {', '.join(agregados)}")
-    if actualizados:
-        novedades.append(f"actualicé: {', '.join(actualizados)}")
-    lineas.append("🎙️ Audio procesado" + (f" — {'; '.join(novedades)}" if novedades else "."))
+    for singular, plural, items, sin, formateador in (
+        ("Maleza", "Malezas", obj.malezas, obj.sin_malezas, _formatear_maleza),
+        ("Plaga", "Plagas", obj.plagas, obj.sin_plagas, _formatear_plaga),
+        ("Enfermedad", "Enfermedades", obj.enfermedades, obj.sin_enfermedades, _formatear_enfermedad),
+    ):
+        if items:
+            titulo = singular if len(items) == 1 else plural
+            lineas.append(f"{titulo}: " + ", ".join(formateador(i) for i in items))
+        elif sin:
+            lineas.append(f"{plural}: no hay")
+    return lineas
 
-    lugar = ", ".join(x for x in (cabecera.localidad, cabecera.provincia) if x)
-    detalle_lote = " · ".join(x for x in (lugar, cabecera.cultivo, cabecera.ensayo) if x)
-    prefijo = "📂 Lote abierto" if abierta is not None else "📋 Lote"
-    lineas.append(f"{prefijo}: {cabecera.lote or '—'}" + (f" ({detalle_lote})" if detalle_lote else ""))
-    if abierta is None and audio.lote:
-        lineas[-1] += " — se abre al guardar"
 
-    generales = _linea_generales(audio)
-    if generales:
-        lineas.append(generales)
+def _lineas_generales_simple(obj) -> list[str]:
+    """Umbral, acciones, productos y comentarios: valen para un híbrido o para todo el lote."""
+    lineas = _lineas_relevamientos_simple(obj)
+    if obj.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO:
+        lineas.append(f"Umbral de daño económico: {obj.umbral_dano_economico.value}")
+    _agregar(lineas, "Acciones", obj.acciones)
+    lineas.extend(formatear_aplicacion(a) for a in obj.aplicaciones)
+    _agregar(lineas, "Comentarios", obj.comentarios)
+    return lineas
 
-    if hibridos:
-        lineas.append(f"🧬 Borrador ({len(hibridos)} {singular}(s)):")
-        for numero, hibrido in enumerate(hibridos, start=1):
-            nombre = hibrido.hibrido_variedad or "sin nombre"
-            marca = "🆕 " if nombre in agregados else "✏️ " if nombre in actualizados else ""
-            lineas.append(_linea_hibrido_compacta(numero, hibrido, marca))
+
+def _lineas_hibrido_simple(h: Hibrido, singular: str, con_nombre: bool = True) -> list[str]:
+    lineas = []
+    if con_nombre:
+        _agregar(lineas, singular.capitalize(), h.hibrido_variedad)
+    _agregar(lineas, "Tratamiento", h.tratamiento)
+    if h.stand_valor is not None:
+        unidad = h.stand_unidad.value if h.stand_unidad else ""
+        lineas.append(f"Stand de plantas: {_numero(h.stand_valor)} {unidad}".strip())
+    _agregar(lineas, "Estado del cultivo", h.estado_cultivo)
+    lineas.extend(_lineas_generales_simple(h))
+    return lineas
+
+
+def resumen_simple(nuevo: RecorridaAudio) -> str:
+    """Solo lo que se entendió de ESTE audio: un dato por línea, sin íconos ni avisos de lo
+    que falta (eso se completa en la base como "no se mencionó", pero no hace falta mostrarlo)."""
+    singular, _plural = etiqueta_material(nuevo.cultivo)
+    lineas: list[str] = []
+    _agregar(lineas, "Cliente", nuevo.cliente)
+    _agregar(lineas, "Provincia", nuevo.provincia)
+    _agregar(lineas, "Localidad", nuevo.localidad)
+    _agregar(lineas, "Lote", nuevo.lote)
+    _agregar(lineas, "Cultivo", nuevo.cultivo)
+    _agregar(lineas, "Ensayo", nuevo.ensayo)
+    _agregar(lineas, "Estadío fenológico", nuevo.estadio_fenologico)
+
+    efectivos = nuevo.hibridos_efectivos()
+    if not efectivos:
+        lineas.extend(_lineas_generales_simple(nuevo))
+    elif len(efectivos) == 1:
+        lineas.extend(_lineas_hibrido_simple(efectivos[0], singular))
     else:
-        lineas.append(f"🧬 Borrador: todavía sin {plural}")
-
-    avisos = list(_aviso_cabecera(cabecera))
-    if audio.es_otro_lote_que(abierta):
-        avisos.append(
-            f"⚠️ El borrador es del lote «{audio.lote}» pero el lote abierto es «{abierta.lote}»: "
-            "mandá /cerrar antes de guardar."
-        )
-    sin_datos = [h for h in hibridos if h.campos_hibrido_faltantes()]
-    if sin_datos:
-        avisos.append(f"⚠️ {plural.capitalize()} con datos incompletos (stand, estado o nombre): {len(sin_datos)}")
-    for lista in ("malezas", "plagas", "enfermedades"):
-        cantidad = sum(1 for h in hibridos if lista in h.relevamientos_sin_informar())
-        if cantidad:
-            avisos.append(f"⚠️ Falta confirmar si hay o no hay {lista} en {cantidad} {singular}(s)")
-    lineas.extend(avisos)
-    if any(a.startswith("⚠️ Falta confirmar") for a in avisos):
-        lineas.append("Decilo en un audio (\"no hay plagas en ninguno\") o usá /corregir todos sin plagas.")
-
-    lineas.append("")
-    lineas.append(f"Ver todo: /borrador · Corregir: /corregir · Sacar uno: /eliminar")
+        for h in efectivos:
+            if lineas:
+                lineas.append("")
+            lineas.extend(_lineas_hibrido_simple(h, singular))
     return "\n".join(lineas)
 
 

@@ -28,6 +28,7 @@ from .config import Config
 from .modelos import (
     Aplicacion,
     CabeceraLote,
+    Cliente,
     Enfermedad,
     EstadoAplicacion,
     Hibrido,
@@ -108,6 +109,22 @@ Respuesta: {"provincia":"Buenos Aires","localidad":"Roberts",\
 {"hibrido_variedad":"5020","stand_valor":3,"estado_cultivo":"muy bueno"}]}
 """
 
+# Paso aparte para el cliente (no en el paso 1): agregar el campo ahí hacía que el modelo
+# chico dejara de extraer bien localidad/lote/cultivo apenas el audio nombraba un cliente
+# (confirmado probando varios audios con distintos nombres). Corre solo si parece que se
+# nombra un cliente, igual que los pasos 2 a 4.
+INSTRUCCION_PASO_CLIENTE = """\
+
+PASO: CLIENTE.
+Decime si el técnico nombra al cliente o productor dueño del campo (p. ej. \
+"cliente Don Justo", "en lo de Pérez", "el campo es de la familia Gómez").
+- "cliente" es su nombre, solo si lo dice así. No confundas con el lote, la \
+localidad o el técnico que graba el audio.
+- Si te pasan un catálogo de clientes y coincide con uno (aunque se lo nombre \
+distinto), completá "cliente_id" con su id y "cliente" con su nombre del catálogo.
+- Si no nombra ningún cliente, devolvé {}.
+"""
+
 # Sin ejemplo a propósito: un modelo chico copia la respuesta del ejemplo aunque el audio sea otro.
 INSTRUCCION_PASO_2 = """\
 
@@ -174,6 +191,8 @@ _PATRON_RELEVAMIENTOS = re.compile(
 )
 # Y el paso 3 solo corre si aparece alguna de estas palabras.
 _PATRON_OBSERVACIONES = re.compile(r"umbral|accion|aplic|recomend|comentario|observ|control|conviene|hay que")
+# El paso del cliente corre solo si aparece alguna de estas palabras (ver `menciona_cliente`).
+_PATRON_CLIENTE = re.compile(r"cliente|productor|en lo de\b|due[ñn]o del campo")
 # El paso 4 corre si aparece alguna de estas palabras o se nombra un producto (ver `menciona_aplicaciones`).
 _PATRON_APLICACIONES = re.compile(
     r"aplic|pulveriz|fumig|dosis|herbicida|insecticida|fungicida|coadyuvante|curasemilla|caldo|"
@@ -201,6 +220,11 @@ class _HibridoBasico(BaseModel):
 
 class _Paso1(CabeceraLote):
     hibridos: list[_HibridoBasico] = Field(default_factory=list)
+
+
+class _PasoCliente(BaseModel):
+    cliente: str | None = None
+    cliente_id: int | None = None
 
 
 class _Hallazgo(BaseModel):
@@ -245,10 +269,11 @@ class _Paso4(BaseModel):
 
 
 _PASOS = {
-    1: (_Paso1, INSTRUCCION_PASO_1, ("latitud", "longitud")),
+    1: (_Paso1, INSTRUCCION_PASO_1, ("latitud", "longitud", "cliente", "cliente_id")),
     2: (_Paso2, INSTRUCCION_PASO_2, ()),
     3: (_Paso3, INSTRUCCION_PASO_3, ()),
     4: (_Paso4, INSTRUCCION_PASO_4, ()),
+    5: (_PasoCliente, INSTRUCCION_PASO_CLIENTE, ()),
 }
 
 _CLAVES_QUE_SOBRAN_EN_EL_ESQUEMA = ("title", "default", "description")
@@ -312,6 +337,15 @@ def menciona_aplicaciones(transcripcion: str, vocabulario: list[catalogo_mod.Ent
     return productos_mod.nombra_algun_producto(transcripcion, vocabulario)
 
 
+def menciona_cliente(transcripcion: str, clientes_existentes: list[Cliente]) -> bool:
+    """True si el audio parece nombrar a un cliente/productor: dice una palabra como "cliente" o
+    "productor", o nombra a alguno ya cargado en el catálogo del usuario."""
+    texto = _sin_tildes_y_minusculas(transcripcion)
+    if _PATRON_CLIENTE.search(texto):
+        return True
+    return any(_se_dijo(c.nombre, transcripcion) for c in clientes_existentes)
+
+
 def _vocabulario_para_paso_1(vocabulario: list[catalogo_mod.EntradaCatalogo]) -> str:
     return catalogo_mod.formatear_para_prompt(
         [e for e in vocabulario if e.tipo in ("hibrido", "ensayo", "nota")]
@@ -351,6 +385,15 @@ def _prompt_paso_2(transcripcion: str, hibridos: list[str]) -> str:
 
 def _prompt_paso_3(transcripcion: str) -> str:
     return f"Transcripción del audio del técnico:\n{transcripcion}"
+
+
+def _prompt_paso_cliente(transcripcion: str, clientes_existentes: list[Cliente]) -> str:
+    partes = []
+    if clientes_existentes:
+        catalogo = [c.model_dump() for c in clientes_existentes]
+        partes.append(f"Catálogo de clientes existentes del usuario:\n{json.dumps(catalogo, ensure_ascii=False)}")
+    partes.append(f"Transcripción del audio del técnico:\n{transcripcion}")
+    return "\n\n".join(partes)
 
 
 def _prompt_paso_4(transcripcion: str, hibridos: list[str]) -> str:
@@ -781,6 +824,30 @@ def _sin_datos_inventados(
     audio.hibridos = conservados
 
 
+def _cliente_sin_inventar(
+    audio: RecorridaAudio, transcripcion: str, clientes_existentes: list[Cliente]
+) -> None:
+    """Como `_sin_datos_inventados`, pero para lo que devuelve el paso del cliente: solo vale
+    si se dijo, o si el modelo lo reconoció del catálogo y el audio menciona la palabra "cliente"."""
+    if audio.cliente:
+        del_catalogo = next(
+            (c for c in clientes_existentes if audio.cliente_id is not None and c.id == audio.cliente_id), None
+        )
+        if not _se_dijo(audio.cliente, transcripcion) and not (
+            del_catalogo and "cliente" in _sin_tildes_y_minusculas(transcripcion)
+        ):
+            logger.warning("Descarto el cliente «%s»: no se dijo en el audio", audio.cliente)
+            audio.cliente = audio.cliente_id = None
+        elif del_catalogo is not None:
+            audio.cliente = del_catalogo.nombre
+    if audio.cliente and audio.cliente_id is None:
+        mismo = next(
+            (c for c in clientes_existentes if normalizar_texto(c.nombre) == normalizar_texto(audio.cliente)), None
+        )
+        if mismo is not None:
+            audio.cliente, audio.cliente_id = mismo.nombre, mismo.id
+
+
 def _nombre_detectado(nombre: str, conocidos: list[str]) -> str:
     """Lleva el nombre que escribió el modelo al del híbrido ya detectado en el paso 1
     ("ST9939" y "9939" son el mismo). Si no hay una coincidencia clara, lo deja como está."""
@@ -1143,6 +1210,7 @@ async def extraer_recorrida(
     lotes_existentes: list[Lote] | None = None,
     cabecera_abierta: CabeceraLote | None = None,
     vocabulario: list[catalogo_mod.EntradaCatalogo] | None = None,
+    clientes_existentes: list[Cliente] | None = None,
 ) -> RecorridaAudio:
     """Extrae lo que dice UN audio: datos del lote, datos generales y lista de híbridos.
 
@@ -1150,6 +1218,7 @@ async def extraer_recorrida(
     Si falla algún paso tras reintentar, propaga `ExtraccionError` (no se descarta nada en silencio).
     """
     vocabulario = vocabulario or []
+    clientes_existentes = clientes_existentes or []
     paso1 = await _pedir(
         config, 1, _prompt_paso_1(transcripcion, lotes_existentes or [], cabecera_abierta, vocabulario)
     )
@@ -1171,6 +1240,11 @@ async def extraer_recorrida(
         nombres = [h.hibrido_variedad for h in audio.hibridos if h.hibrido_variedad]
         paso4 = await _pedir(config, 4, _prompt_paso_4(transcripcion, nombres))
         audio.combinar(_audio_desde_paso_4(paso4, transcripcion, nombres, vocabulario))
+
+    if menciona_cliente(transcripcion, clientes_existentes):
+        paso_cliente = await _pedir(config, 5, _prompt_paso_cliente(transcripcion, clientes_existentes))
+        audio.cliente, audio.cliente_id = paso_cliente.cliente, paso_cliente.cliente_id
+        _cliente_sin_inventar(audio, transcripcion, clientes_existentes)
 
     audio.transcripcion_original = transcripcion
     return audio

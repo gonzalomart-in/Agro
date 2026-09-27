@@ -12,7 +12,10 @@ class BaseDeDatosFalsa:
     async def listar_lotes(self, telegram_user_id: int):
         return self.lotes.get(telegram_user_id, [])
 
-    async def crear_lote(self, telegram_user_id, nombre, localidad=None, cultivo_habitual=None, ensayo_habitual=None):
+    async def crear_lote(
+        self, telegram_user_id, nombre, localidad=None, cultivo_habitual=None, ensayo_habitual=None,
+        cliente_id=None,
+    ):
         lote_id = self._siguiente_id
         self._siguiente_id += 1
         fila = {
@@ -22,6 +25,8 @@ class BaseDeDatosFalsa:
             "localidad": localidad,
             "cultivo_habitual": cultivo_habitual,
             "ensayo_habitual": ensayo_habitual,
+            "cliente_id": cliente_id,
+            "cliente": None,
         }
         self.lotes.setdefault(telegram_user_id, []).append(fila)
         return lote_id

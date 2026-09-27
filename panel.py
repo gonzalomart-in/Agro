@@ -207,8 +207,6 @@ def _detalle_recorrida(registro: dict, de_usuario: int | None, nombres: dict[int
             f"**Lote:** {registro.get('lote') or '—'} · **Cultivo:** {registro.get('cultivo') or '—'}  \n"
             f"**Híbrido/variedad:** {registro.get('hibrido_variedad') or '—'}"
         )
-        if registro.get("latitud") is not None and registro.get("longitud") is not None:
-            st.caption(f"📍 {registro['latitud']:.5f}, {registro['longitud']:.5f}")
         with st.expander("Transcripción original del audio"):
             st.text(registro.get("transcripcion_original") or "—")
         with st.popover("🗑️ Eliminar este registro"):
@@ -377,6 +375,71 @@ def pagina_recorridas(usuario: acceso.UsuarioPanel, de_usuario: int | None, nomb
     _detalle_recorrida(por_id[elegido], de_usuario, nombres)
 
 
+# ---------- página: clientes ----------
+
+def _dueno_nuevo(usuario: acceso.UsuarioPanel, nombres: dict[int, str], clave: str) -> int | None:
+    """A quién pertenece lo que se carga a mano: el propio usuario, o el técnico elegido si es admin."""
+    if not usuario.es_admin:
+        return usuario.telegram_user_id
+    opciones = list(nombres) or [usuario.telegram_user_id]
+    return st.selectbox(
+        "Técnico dueño", opciones, format_func=lambda i: nombres.get(i, str(i)), key=f"dueno_{clave}"
+    )
+
+
+def pagina_clientes(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: dict[int, str]) -> None:
+    st.header("👤 Clientes")
+    _mostrar_aviso()
+    st.caption(
+        "Los productores/clientes de cada técnico. Cargarlos acá (aunque todavía no tengan lotes) "
+        "ayuda a que el bot los reconozca cuando los nombrás en un audio."
+    )
+    with st.form("agregar_cliente", clear_on_submit=True):
+        st.markdown("**Agregar cliente**")
+        nombre_nuevo = st.text_input("Nombre")
+        dueno = _dueno_nuevo(usuario, nombres, "cliente")
+        if st.form_submit_button("➕ Agregar", type="primary"):
+            if not nombre_nuevo.strip():
+                st.error("Poné un nombre.")
+            else:
+                correr(lambda db: db.crear_cliente(dueno, nombre_nuevo.strip()))
+                _guardado(f"✅ Cargué el cliente «{nombre_nuevo.strip()}».")
+
+    filas = correr(lambda db: db.listar_clientes_panel(de_usuario))
+    if not filas:
+        st.info("Todavía no hay clientes cargados.")
+        return
+    tabla = pd.DataFrame([
+        {"id": f["id"], "tecnico": nombres.get(f["telegram_user_id"]) or str(f["telegram_user_id"]),
+         **{campo: f[campo] for campo in edicion.COLUMNAS_CLIENTE}}
+        for f in filas
+    ])
+    editada = st.data_editor(
+        tabla,
+        key=f"clientes_{_version()}",
+        hide_index=True,
+        column_order=["id", *(["tecnico"] if usuario.es_admin else []), *edicion.COLUMNAS_CLIENTE],
+        column_config={
+            "id": st.column_config.NumberColumn("N°", format="%d", width="small"),
+            "tecnico": st.column_config.TextColumn("Técnico"),
+            **_columnas_de_texto(edicion.COLUMNAS_CLIENTE),
+        },
+        disabled=["id", "tecnico"],
+        placeholder="—",
+    )
+    try:
+        cambios = edicion.cambios_en_tabla(
+            tabla.to_dict("records"), editada.to_dict("records"), edicion.COLUMNAS_CLIENTE, obligatorios=("nombre",)
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return
+    if cambios and st.button(f"💾 Guardar cambios ({len(cambios)})", type="primary", key="guardar_clientes"):
+        for cliente_id, c in cambios.items():
+            correr(lambda db, cliente_id=cliente_id, c=c: db.actualizar_cliente(cliente_id, c, de_usuario))
+        _guardado(f"✅ Guardé los cambios en {len(cambios)} cliente(s).")
+
+
 # ---------- página: lotes ----------
 
 def pagina_lotes(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: dict[int, str]) -> None:
@@ -386,12 +449,37 @@ def pagina_lotes(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: 
         "La lista de lotes que el bot usa para reconocer de qué lote hablás en los audios. "
         "Cambiar algo acá no cambia las recorridas ya guardadas (esas se corrigen en Recorridas)."
     )
+    clientes = correr(lambda db: db.listar_clientes_panel(de_usuario))
+    clientes_por_nombre = {f["nombre"]: f["id"] for f in clientes}
+    opciones_cliente = [edicion.SIN_CLIENTE, *sorted(clientes_por_nombre, key=str.lower)]
+
+    with st.form("agregar_lote", clear_on_submit=True):
+        st.markdown("**Agregar lote**")
+        nombre_nuevo = st.text_input("Nombre del lote")
+        cliente_nuevo = st.selectbox("Cliente", opciones_cliente)
+        col1, col2 = st.columns(2)
+        localidad_nueva = col1.text_input("Localidad")
+        cultivo_nuevo = col2.text_input("Cultivo habitual")
+        ensayo_nuevo = st.text_input("Ensayo habitual")
+        dueno = _dueno_nuevo(usuario, nombres, "lote")
+        if st.form_submit_button("➕ Agregar", type="primary"):
+            if not nombre_nuevo.strip():
+                st.error("Poné un nombre de lote.")
+            else:
+                cliente_id = clientes_por_nombre.get(cliente_nuevo)
+                correr(lambda db: db.crear_lote(
+                    dueno, nombre_nuevo.strip(), localidad_nueva.strip() or None,
+                    cultivo_nuevo.strip() or None, ensayo_nuevo.strip() or None, cliente_id,
+                ))
+                _guardado(f"✅ Cargué el lote «{nombre_nuevo.strip()}».")
+
     filas = correr(lambda db: db.listar_lotes_panel(de_usuario))
     if not filas:
         st.info("Todavía no hay lotes: se crean solos al confirmar la primera recorrida de cada uno.")
         return
     tabla = pd.DataFrame([
         {"id": f["id"], "tecnico": nombres.get(f["telegram_user_id"]) or str(f["telegram_user_id"]),
+         "cliente": f["cliente"] or edicion.SIN_CLIENTE,
          **{campo: f[campo] for campo in edicion.COLUMNAS_LOTE}}
         for f in filas
     ])
@@ -399,10 +487,11 @@ def pagina_lotes(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: 
         tabla,
         key=f"lotes_{_version()}",
         hide_index=True,
-        column_order=["id", *(["tecnico"] if usuario.es_admin else []), *edicion.COLUMNAS_LOTE],
+        column_order=["id", *(["tecnico"] if usuario.es_admin else []), "cliente", *edicion.COLUMNAS_LOTE],
         column_config={
             "id": st.column_config.NumberColumn("N°", format="%d", width="small"),
             "tecnico": st.column_config.TextColumn("Técnico"),
+            "cliente": st.column_config.SelectboxColumn("Cliente", options=opciones_cliente),
             **_columnas_de_texto(edicion.COLUMNAS_LOTE),
         },
         disabled=["id", "tecnico"],
@@ -415,6 +504,10 @@ def pagina_lotes(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: 
     except ValueError as error:
         st.error(str(error))
         return
+    for fila_original, fila_editada in zip(tabla.to_dict("records"), editada.to_dict("records")):
+        if fila_original["cliente"] != fila_editada["cliente"]:
+            nuevo_cliente_id = clientes_por_nombre.get(fila_editada["cliente"])
+            cambios.setdefault(int(fila_original["id"]), {})["cliente_id"] = nuevo_cliente_id
     if cambios and st.button(f"💾 Guardar cambios ({len(cambios)})", type="primary"):
         for lote_id, c in cambios.items():
             correr(lambda db, lote_id=lote_id, c=c: db.actualizar_lote(lote_id, c, de_usuario))
@@ -595,7 +688,9 @@ def main() -> None:
     with st.sidebar:
         st.markdown(f"### 🌾 Recorridas a campo\n**{nombres.get(usuario.telegram_user_id, 'Sin nombre')}**")
         st.caption("Administrador: ves los datos de todos" if usuario.es_admin else "Ves y corregís tus propios datos")
-        pagina = st.radio("Sección", ["📋 Recorridas", "🗂️ Lotes", "📚 Vocabulario"], label_visibility="collapsed")
+        pagina = st.radio(
+            "Sección", ["📋 Recorridas", "👤 Clientes", "🗂️ Lotes", "📚 Vocabulario"], label_visibility="collapsed"
+        )
         st.divider()
         vence = usuario.vence_en.astimezone(exportar.ZONA_ARGENTINA)
         st.caption(f"Tu acceso vence el {vence:%d/%m a las %H:%M}. Después pedí otro link con /panel.")
@@ -607,6 +702,8 @@ def main() -> None:
 
     if pagina.endswith("Recorridas"):
         pagina_recorridas(usuario, de_usuario, nombres)
+    elif pagina.endswith("Clientes"):
+        pagina_clientes(usuario, de_usuario, nombres)
     elif pagina.endswith("Lotes"):
         pagina_lotes(usuario, de_usuario, nombres)
     else:

@@ -41,6 +41,8 @@ COLUMNAS_LOTE = {
     "cultivo_habitual": "Cultivo habitual",
     "ensayo_habitual": "Ensayo habitual",
 }
+COLUMNAS_CLIENTE = {"nombre": "Nombre"}
+SIN_CLIENTE = "— (sin cliente)"
 LISTAS = {"malezas": "Malezas", "plagas": "Plagas", "enfermedades": "Enfermedades"}
 CAMPOS_ITEMS = {
     "malezas": {"nombre": "Nombre", "tamano": "Tamaño", "porcentaje_cobertura": "% cobertura", "observacion": "Observación"},
@@ -70,7 +72,7 @@ _NUMERICOS = {
     "dosis", "volumen_caldo",
 }
 _TITULOS = {
-    **COLUMNAS_RECORRIDA, **COLUMNAS_LOTE, **CAMPOS_APLICACION,
+    **COLUMNAS_RECORRIDA, **COLUMNAS_LOTE, **COLUMNAS_CLIENTE, **CAMPOS_APLICACION,
     **{c: t for campos in CAMPOS_ITEMS.values() for c, t in campos.items()},
 }
 

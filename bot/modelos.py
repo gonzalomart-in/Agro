@@ -76,6 +76,15 @@ class Lote(BaseModel):
     localidad: str | None = None
     cultivo_habitual: str | None = None
     ensayo_habitual: str | None = None
+    cliente_id: int | None = None
+    cliente: str | None = None
+
+
+class Cliente(BaseModel):
+    """Entrada del catálogo de clientes de un usuario (dueño de los lotes)."""
+
+    id: int | None = None
+    nombre: str
 
 
 def normalizar_texto(texto: str | None) -> str:
@@ -123,6 +132,14 @@ class CabeceraLote(BaseModel):
     lote_id: int | None = Field(
         default=None,
         description="ID del lote existente si coincide con el catálogo del usuario",
+    )
+    cliente: str | None = Field(
+        default=None,
+        description="Nombre del cliente/productor dueño del lote, si el técnico lo dice",
+    )
+    cliente_id: int | None = Field(
+        default=None,
+        description="ID del cliente existente si coincide con el catálogo del usuario",
     )
     cultivo: str | None = None
     ensayo: str | None = None

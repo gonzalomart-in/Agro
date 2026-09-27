@@ -2,7 +2,7 @@
 import pytest
 
 from bot.correcciones import ErrorCorreccion, aplicar_correccion, eliminar_hibrido
-from bot.ficha import formatear_borrador, resumen_borrador
+from bot.ficha import formatear_borrador, resumen_simple
 from bot.modelos import (
     CabeceraLote,
     Enfermedad,
@@ -139,38 +139,35 @@ def test_lote_con_y_sin_la_palabra_lote_es_el_mismo():
     assert RecorridaAudio(lote="Lote 3").es_otro_lote_que(CabeceraLote(lote="Lote 4")) is True
 
 
-# ---------- resumen y borrador completo ----------
+# ---------- resumen simple (solo lo dicho en este audio) y borrador completo ----------
 
-def test_resumen_muestra_novedades_lote_y_faltantes():
-    borrador = RecorridaAudio(
-        provincia="Buenos Aires", localidad="Roberts", lote="Las Lilas", cultivo="maíz",
-        hibridos=[_h("9939", 3, estado_cultivo="bueno"), _h("9937", 3.2)],
-    )
-    texto = resumen_borrador(borrador, None, ["9939", "9937"], [])
-    assert "+2 híbrido(s): 9939, 9937" in texto
+def test_resumen_simple_muestra_solo_los_datos_del_lote():
+    audio = RecorridaAudio(provincia="Buenos Aires", localidad="Roberts", lote="Las Lilas", cultivo="maíz")
+    texto = resumen_simple(audio)
+    assert texto == "Provincia: Buenos Aires\nLocalidad: Roberts\nLote: Las Lilas\nCultivo: maíz"
+
+
+def test_resumen_simple_con_un_solo_hibrido_lo_deja_todo_junto():
+    audio = RecorridaAudio(lote="Las Lilas", cultivo="maíz", hibridos=[_h("9939", 3, estado_cultivo="bueno")])
+    texto = resumen_simple(audio)
     assert "Lote: Las Lilas" in texto
-    assert "Roberts, Buenos Aires" in texto
-    assert "se abre al guardar" in texto
-    assert "Borrador (2 híbrido(s)):" in texto
-    assert "Falta confirmar si hay o no hay malezas en 2 híbrido(s)" in texto
-    assert "Faltan datos del lote: Ensayo" in texto
-    assert "/corregir todos sin" in texto
+    assert "Híbrido: 9939" in texto
+    assert "Stand de plantas: 3 pl/m lineal" in texto
+    assert "Estado del cultivo: bueno" in texto
+    assert "❓" not in texto
+    assert "Falta" not in texto
 
 
-def test_resumen_con_confirmacion_general_no_pide_confirmar_de_nuevo():
-    borrador = RecorridaAudio(
-        lote="Las Lilas", sin_malezas=True, sin_plagas=True, sin_enfermedades=True,
-        hibridos=[_h("9939", 3, estado_cultivo="bueno")],
-    )
-    texto = resumen_borrador(borrador, None, [], ["9939"])
-    assert "Falta confirmar" not in texto
-    assert "actualicé: 9939" in texto
+def test_resumen_simple_con_varios_hibridos_los_separa_con_una_linea_en_blanco():
+    audio = RecorridaAudio(hibridos=[_h("9939", 3), _h("9937", 2.9)])
+    texto = resumen_simple(audio)
+    assert "Híbrido/variedad: 9939" in texto
+    assert "Híbrido/variedad: 9937" in texto
+    assert texto == "Híbrido/variedad: 9939\nStand de plantas: 3 pl/m lineal\n\nHíbrido/variedad: 9937\nStand de plantas: 2.9 pl/m lineal"
 
 
-def test_resumen_avisa_si_el_borrador_es_de_otro_lote_que_el_abierto():
-    borrador = RecorridaAudio(lote="El Ombú", hibridos=[_h("1", 3)])
-    texto = resumen_borrador(borrador, CabeceraLote(lote="Las Lilas"), ["1"], [])
-    assert "/cerrar" in texto
+def test_resumen_simple_sin_datos_es_vacio():
+    assert resumen_simple(RecorridaAudio()) == ""
 
 
 def test_borrador_completo_numera_los_hibridos_y_usa_los_generales():
@@ -271,49 +268,28 @@ def test_eliminar_hibrido():
         eliminar_hibrido(b, "")
 
 
-# ---------- resumen con una línea por híbrido ----------
+# ---------- resumen simple: malezas, plagas, enfermedades, umbral, acciones, comentarios ----------
 
-def test_resumen_muestra_una_linea_por_hibrido_con_todo_lo_cargado():
-    borrador = RecorridaAudio(
-        lote="Las Lilas", cultivo="maíz",
+def test_resumen_simple_muestra_malezas_plagas_y_enfermedades():
+    audio = RecorridaAudio(hibridos=[_h(
+        "9939", 3,
+        malezas=[Maleza(nombre="rama negra", porcentaje_cobertura=5, tamano="elongada")],
+        plagas=[Plaga(nombre="oruga cortadora", cantidad_por_metro_lineal=0.5)],
         sin_enfermedades=True,
-        hibridos=[
-            _h("ST9939", 3, estado_cultivo="bueno",
-               malezas=[Maleza(nombre="rama negra", porcentaje_cobertura=5, tamano="elongada")],
-               plagas=[Plaga(nombre="oruga cortadora", cantidad_por_metro_lineal=0.5)]),
-            _h("ST9937", 3.2, sin_plagas=True),
-            Hibrido(hibrido_variedad="DK7272"),
-        ],
-    )
-    texto = resumen_borrador(borrador, None, ["ST9939", "ST9937"], ["DK7272"])
-    assert "Borrador (3 híbrido(s)):" in texto
-    assert ("1. 🆕 ST9939 — stand 3 pl/m · estado bueno · 🌾 rama negra 5% (elongada) · "
-            "🐛 oruga cortadora 0.5/m · 🦠 ✅ no hay") in texto
-    assert "2. 🆕 ST9937 — stand 3.2 pl/m · estado ❓ · 🌾 ❓ · 🐛 ✅ no hay · 🦠 ✅ no hay" in texto
-    assert "3. ✏️ DK7272 — stand ❓ · estado ❓ · 🌾 ❓ · 🐛 ❓ · 🦠 ✅ no hay" in texto
-    assert "🌐 Para todo el lote: 🦠 ✅ no hay" in texto
+    )])
+    texto = resumen_simple(audio)
+    assert "Maleza: rama negra - tamaño: elongada - cobertura: 5.0%" in texto
+    assert "Plaga: oruga cortadora - 0.5/m lineal" in texto
+    assert "Enfermedades: no hay" in texto
 
 
-def test_resumen_sin_novedades_ni_marcas_en_hibridos_de_audios_anteriores():
-    borrador = RecorridaAudio(lote="Las Lilas", hibridos=[_h("9939", 3), _h("9937", 3.2)])
-    texto = resumen_borrador(borrador, None, ["9937"], [])
-    assert "1. 9939 —" in texto
-    assert "2. 🆕 9937 —" in texto
-
-
-def test_resumen_muestra_umbral_acciones_y_comentarios():
-    borrador = RecorridaAudio(
+def test_resumen_simple_muestra_umbral_acciones_y_comentarios():
+    audio = RecorridaAudio(
         acciones="aplicar insecticida en todo el lote", comentarios="buen estado general",
         umbral_dano_economico=UmbralDanoEconomico.CERCANO,
         hibridos=[_h("9939", 3)],
     )
-    texto = resumen_borrador(borrador, None, ["9939"], [])
-    assert "umbral cercano" in texto
-    assert "acciones: aplicar insecticida en todo el lote" in texto
-    assert "💬 buen estado general" in texto
-
-
-def test_resumen_recorta_textos_largos():
-    borrador = RecorridaAudio(hibridos=[_h("9939", 3, comentarios="x" * 200)])
-    linea = [l for l in resumen_borrador(borrador, None, [], []).splitlines() if l.startswith("1.")][0]
-    assert "…" in linea and len(linea) < 250
+    texto = resumen_simple(audio)
+    assert "Umbral de daño económico: cercano" in texto
+    assert "Acciones: aplicar insecticida en todo el lote" in texto
+    assert "Comentarios: buen estado general" in texto

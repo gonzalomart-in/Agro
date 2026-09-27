@@ -17,7 +17,7 @@ from bot.extraccion import (
     menciona_aplicaciones,
 )
 from bot.exportar import aplicaciones_a_dataframe, generar_excel, registros_a_dataframe
-from bot.ficha import formatear_borrador, formatear_hibrido, resumen_borrador
+from bot.ficha import formatear_borrador, formatear_hibrido, resumen_simple
 from bot.modelos import Aplicacion, CabeceraLote, EstadoAplicacion, Hibrido, RecorridaAudio
 from bot.vocabulario_base import VOCABULARIO_BASE
 from tests.test_extraccion import OllamaFalso, _config_prueba
@@ -314,7 +314,7 @@ def test_ficha_muestra_los_productos():
 
 def test_resumen_y_borrador_de_un_audio_solo_con_productos():
     borrador = RecorridaAudio(lote="Martín", aplicaciones=[_a("glifosato", 2)])
-    assert "🧴 glifosato 2 l/ha" in resumen_borrador(borrador, None, [], [])
+    assert "A aplicar: glifosato 2 l/ha" in resumen_simple(borrador)
     assert "A aplicar: glifosato 2 l/ha" in formatear_borrador(borrador)
 
 

@@ -19,10 +19,10 @@ from telegram.ext import (
     filters,
 )
 
-from . import acceso, catalogo as catalogo_mod, correcciones, exportar, extraccion, lotes as lotes_mod
+from . import acceso, catalogo as catalogo_mod, clientes as clientes_mod, correcciones, exportar, extraccion, lotes as lotes_mod
 from .config import Config, get_config
 from .db import BaseDeDatos
-from .ficha import formatear_borrador, formatear_cabecera, partir_texto, resumen_borrador
+from .ficha import formatear_borrador, formatear_cabecera, partir_texto, resumen_simple
 from .modelos import CabeceraLote, RecorridaAudio, etiqueta_material
 from .transcripcion import precargar_modelo, transcribir_archivo
 from .vocabulario_base import VOCABULARIO_BASE
@@ -149,15 +149,17 @@ async def _enviar_con_botones(
 async def _mostrar_resumen(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    nuevo: RecorridaAudio,
     borrador: RecorridaAudio,
-    agregados: list[str],
-    actualizados: list[str],
 ) -> None:
+    """Muestra solo lo que se entendió de ESTE audio (`nuevo`); los botones usan el
+    borrador acumulado (`borrador`) para saber cuánto hay para guardar."""
     _, abierta = await _lote_abierto(_db(context), update.effective_user.id)
+    texto = resumen_simple(nuevo) or "No encontré datos puntuales para mostrar, pero quedó sumado al borrador."
     await _enviar_con_botones(
         context,
         update.effective_chat.id,
-        partir_texto(resumen_borrador(borrador, abierta, agregados, actualizados)),
+        partir_texto(texto),
         _teclado_borrador(borrador, abierta),
     )
 
@@ -174,6 +176,52 @@ async def _mostrar_borrador_completo(
     )
 
 
+async def _cerrar_lote_anterior_si_corresponde(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, nuevo: RecorridaAudio
+) -> RecorridaAudio:
+    """Si `nuevo` nombra un lote distinto del que está en curso (el lote abierto, o si no hay
+    ninguno abierto, el lote del borrador sin confirmar), guarda y cierra ese lote anterior y
+    devuelve un borrador vacío para arrancar el lote nuevo. Si no menciona ningún lote, o es el
+    mismo que ya está en curso, devuelve el borrador tal cual (sigue acumulándose ahí)."""
+    db = _db(context)
+    visita, abierta = await _lote_abierto(db, user_id)
+    borrador = await _cargar_borrador(db, user_id) or RecorridaAudio()
+    referencia = abierta or (borrador if borrador.lote else None)
+    if not nuevo.es_otro_lote_que(referencia):
+        return borrador
+
+    nombre_anterior = referencia.lote
+    if borrador.tiene_datos():
+        cabecera = borrador.completar_con(abierta)
+        if visita is None:
+            cabecera.cliente_id = await clientes_mod.resolver_o_crear_cliente(
+                db, user_id, cabecera.cliente_id, cabecera.cliente
+            )
+            cabecera.lote_id = await lotes_mod.resolver_o_crear_lote(
+                db, user_id, cabecera.lote_id, cabecera.lote, cabecera.localidad, cabecera.cultivo,
+                cabecera.ensayo, cabecera.cliente_id,
+            )
+            visita_id = await db.abrir_visita(user_id, cabecera.model_dump(mode="json"))
+        else:
+            visita_id = visita["id"]
+        for ficha in borrador.fichas(cabecera):
+            await db.guardar_recorrida(user_id, update.effective_user.full_name, ficha, ficha.lote_id, visita_id)
+        cantidad = await db.contar_recorridas_visita(visita_id)
+        await db.cerrar_visita(visita_id, user_id)
+    elif visita is not None:
+        cantidad = await db.contar_recorridas_visita(visita["id"])
+        await db.cerrar_visita(visita["id"], user_id)
+    else:
+        cantidad = 0
+
+    await db.borrar_borrador_actual(user_id)
+    await update.effective_message.reply_text(
+        f"🔒 Cerré el lote «{nombre_anterior}» ({cantidad} registro(s)) porque este audio es de otro "
+        f"lote: «{nuevo.lote}»."
+    )
+    return RecorridaAudio()
+
+
 async def _procesar_transcripcion(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str) -> None:
     """Extrae lo que dice UN audio (o texto) y lo suma al borrador en curso."""
     user_id = update.effective_user.id
@@ -182,6 +230,7 @@ async def _procesar_transcripcion(update: Update, context: ContextTypes.DEFAULT_
 
     _, abierta = await _lote_abierto(db, user_id)
     catalogo_lotes = await lotes_mod.listar_lotes_para_prompt(db, user_id)
+    catalogo_clientes = await clientes_mod.listar_clientes_para_prompt(db, user_id)
     vocabulario = await _vocabulario_completo(db)
 
     await update.effective_message.reply_text("🧠 Interpretando los datos... (puede tardar un minuto)")
@@ -192,6 +241,7 @@ async def _procesar_transcripcion(update: Update, context: ContextTypes.DEFAULT_
             lotes_existentes=catalogo_lotes,
             cabecera_abierta=abierta,
             vocabulario=vocabulario,
+            clientes_existentes=catalogo_clientes,
         )
     except extraccion.ExtraccionError:
         logger.exception("Falló la extracción")
@@ -208,19 +258,11 @@ async def _procesar_transcripcion(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    borrador = await _cargar_borrador(db, user_id) or RecorridaAudio()
-    if nuevo.es_otro_lote_que(borrador):
-        await update.effective_message.reply_text(
-            f"Ese mensaje es del lote «{nuevo.lote}» pero el borrador en curso es del lote "
-            f"«{borrador.lote}». No lo sumé.\n"
-            "Guardá o descartá el borrador actual (botones o /borrador) y después "
-            "reenviá ese audio, o pegá su transcripción como texto."
-        )
-        return
-    agregados, actualizados = borrador.combinar(nuevo)
+    borrador = await _cerrar_lote_anterior_si_corresponde(update, context, user_id, nuevo)
+    borrador.combinar(nuevo)
 
     await _guardar_borrador_en_curso(db, user_id, borrador)
-    await _mostrar_resumen(update, context, borrador, agregados, actualizados)
+    await _mostrar_resumen(update, context, nuevo, borrador)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -638,22 +680,6 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _procesar_transcripcion(update, context, update.message.text)
 
 
-async def manejar_ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _verificar_acceso(update, context):
-        return
-    user_id = update.effective_user.id
-    db = _db(context)
-    borrador = await _cargar_borrador(db, user_id)
-    if borrador is None:
-        await update.message.reply_text("No hay ningún borrador en curso para agregarle la ubicación.")
-        return
-    ubicacion = update.message.location
-    borrador.latitud = ubicacion.latitude
-    borrador.longitud = ubicacion.longitude
-    await _guardar_borrador_en_curso(db, user_id, borrador)
-    await update.message.reply_text("📌 Ubicación agregada al borrador.")
-
-
 async def _guardar_borrador_confirmado(query, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     db = _db(context)
     borrador = await _cargar_borrador(db, user_id)
@@ -677,8 +703,12 @@ async def _guardar_borrador_confirmado(query, context: ContextTypes.DEFAULT_TYPE
                 "(y localidad, cultivo, ensayo si podés) y confirmá de nuevo."
             )
             return
+        cabecera.cliente_id = await clientes_mod.resolver_o_crear_cliente(
+            db, user_id, cabecera.cliente_id, cabecera.cliente
+        )
         cabecera.lote_id = await lotes_mod.resolver_o_crear_lote(
-            db, user_id, cabecera.lote_id, cabecera.lote, cabecera.localidad, cabecera.cultivo, cabecera.ensayo
+            db, user_id, cabecera.lote_id, cabecera.lote, cabecera.localidad, cabecera.cultivo, cabecera.ensayo,
+            cabecera.cliente_id,
         )
         visita_id = await db.abrir_visita(user_id, cabecera.model_dump(mode="json"))
         lote_recien_abierto = True
@@ -831,7 +861,6 @@ def construir_aplicacion() -> Application:
     application.add_handler(CommandHandler("panel", cmd_panel))
 
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, manejar_audio))
-    application.add_handler(MessageHandler(filters.LOCATION, manejar_ubicacion))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
     application.add_handler(CallbackQueryHandler(manejar_boton))
 

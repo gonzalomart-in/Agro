@@ -42,9 +42,10 @@ class BaseFalsa:
             _recorrida(2, TECNICO, localidad="San Pedro", lote="La Loma", hibrido_variedad="DM46i20", stand_valor=3.2),
         ]
         self.lotes = [
-            {"id": 5, "telegram_user_id": ADMIN, "nombre": "Martín", "localidad": "Rancagua", "cultivo_habitual": "soja", "ensayo_habitual": None},
-            {"id": 6, "telegram_user_id": TECNICO, "nombre": "La Loma", "localidad": "San Pedro", "cultivo_habitual": None, "ensayo_habitual": None},
+            {"id": 5, "telegram_user_id": ADMIN, "nombre": "Martín", "localidad": "Rancagua", "cultivo_habitual": "soja", "ensayo_habitual": None, "cliente_id": None, "cliente": None},
+            {"id": 6, "telegram_user_id": TECNICO, "nombre": "La Loma", "localidad": "San Pedro", "cultivo_habitual": None, "ensayo_habitual": None, "cliente_id": None, "cliente": None},
         ]
+        self.clientes = []
         self.catalogo = [{"id": 1, "tipo": "hibrido", "nombre": "ST9939VIP3", "sinonimos": []}]
 
     async def usuario_de_acceso_panel(self, token_hash):
@@ -66,6 +67,33 @@ class BaseFalsa:
     async def listar_lotes_panel(self, de_usuario):
         self.llamadas.append(("listar_lotes_panel", de_usuario))
         return [lote for lote in self.lotes if de_usuario is None or lote["telegram_user_id"] == de_usuario]
+
+    async def listar_clientes_panel(self, de_usuario):
+        self.llamadas.append(("listar_clientes_panel", de_usuario))
+        return [c for c in self.clientes if de_usuario is None or c["telegram_user_id"] == de_usuario]
+
+    async def crear_cliente(self, telegram_user_id, nombre):
+        self.llamadas.append(("crear_cliente", telegram_user_id, nombre))
+        cliente_id = len(self.clientes) + 1
+        self.clientes.append({"id": cliente_id, "telegram_user_id": telegram_user_id, "nombre": nombre})
+        return cliente_id
+
+    async def actualizar_cliente(self, cliente_id, cambios, de_usuario):
+        self.llamadas.append(("actualizar_cliente", cliente_id, cambios, de_usuario))
+        return True
+
+    async def crear_lote(self, telegram_user_id, nombre, localidad=None, cultivo_habitual=None, ensayo_habitual=None, cliente_id=None):
+        self.llamadas.append(("crear_lote", telegram_user_id, nombre))
+        lote_id = len(self.lotes) + 1
+        self.lotes.append({
+            "id": lote_id, "telegram_user_id": telegram_user_id, "nombre": nombre, "localidad": localidad,
+            "cultivo_habitual": cultivo_habitual, "ensayo_habitual": ensayo_habitual, "cliente_id": cliente_id, "cliente": None,
+        })
+        return lote_id
+
+    async def actualizar_lote(self, lote_id, cambios, de_usuario):
+        self.llamadas.append(("actualizar_lote", lote_id, cambios, de_usuario))
+        return True
 
     async def listar_catalogo(self, tipo=None):
         return [dict(f) for f in self.catalogo if tipo is None or f["tipo"] == tipo]

@@ -32,8 +32,6 @@ COLUMNAS_ORDEN = [
     "acciones",
     "aplicaciones",
     "comentarios",
-    "latitud",
-    "longitud",
     "transcripcion_original",
 ]
 
