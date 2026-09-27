@@ -27,9 +27,21 @@ El bot usa la palabra que corresponde al cultivo del lote: **híbrido** en maíz
 
 El bot ya trae un vocabulario técnico de agronomía argentina (`bot/vocabulario_base.py`): cultivos, palabras como cobertura, incidencia o testigo, y nombres de malezas, plagas y enfermedades con sus sinónimos. Se suma al que carga la gente con `/agregar`, que tiene prioridad. Se usa para tres cosas: darle pistas a Whisper, unificar nombres (que "conyza" se guarde como "rama negra") y **corregir palabras mal transcriptas**: por ejemplo "válida" se corrige a "variedad", "v 4" a "V4" y un código partido como "DM 46 i 20" a "DM46i20" (esto último solo si el código está cargado). Para sumar tus propias correcciones: `/agregar termino variedad = válida, valida` (la palabra correcta, y después cómo la escribe mal Whisper).
 
+### Productos a aplicar (o ya aplicados) con su dosis
+
+Si en el audio recomendás aplicar un producto ("aplicar glifosato a 2 litros por hectárea más 2,4 D a medio litro, con aceite metilado, en 80 litros de caldo") o contás que ya se aplicó ("hace diez días se aplicó atrazina, 1 litro"), el bot registra cada producto con: **estado** (a aplicar / ya aplicado), **producto**, **principio activo**, **dosis y unidad** (l/ha, cc/ha, g/ha, kg/ha), **para qué es** (la maleza, plaga o enfermedad), **momento**, **coadyuvante** y **volumen de caldo**. Vale para todo el lote salvo que nombres un híbrido ("en el 9939 aplicar Coragen 50 cc"). Un audio que solo recomienda productos, después de haber guardado los híbridos, se guarda como un registro "para todo el lote".
+
+El principio activo sale del **registro oficial de productos fitosanitarios de SENASA** (Registro Nacional de Terapéutica Vegetal, consulta pública): unos 7.400 productos inscriptos, guardados en `bot/datos/productos_senasa.csv`. El bot reconoce la marca ("Coragen" → clorantraniliprole), una familia de marcas ("Roundup" → glifosato) o el principio activo aunque Whisper lo escriba como suena ("cletodín" → cletodim, "atracina" → atrazina). Para sumar los productos nuevos que se inscriban, cada algunos meses:
+
+```powershell
+.venv\Scripts\python.exe scripts\actualizar_productos_senasa.py
+```
+
+La dosis se guarda **solo si la dijiste** cerca del producto: el bot nunca completa una dosis por su cuenta (ni de una guía ni de un marbete). Entiende "medio litro", "un litro y medio", "500 cc" o "doscientos cincuenta gramos". Las marcas que más usen se pueden cargar con `/agregar producto Roundup Full II = randap` (la marca, y cómo la escribe mal Whisper). Si el bot entendió mal, `/corregir 2 limpiar productos` los saca del borrador, y en el panel se corrigen en el detalle de cada registro. En el Excel hay una hoja **Aplicaciones** con un renglón por producto.
+
 ### Cómo se extrae (y por qué tarda lo que tarda)
 
-Cada audio pasa por hasta tres pedidos cortos al modelo de lenguaje, en vez de uno enorme: (1) lote, híbridos, stand y estado (siempre); (2) malezas, plagas y enfermedades, con los "no hay" (solo si el audio habla de eso); (3) umbral, acciones y comentarios (solo si los menciona). Un audio solo de stands hace un único pedido. Con un modelo chico y solo CPU, lo que más tarda es *escribir* la respuesta (unas 7 palabras-pieza por segundo), así que se le pide que omita todo campo vacío. Los datos que el modelo atribuye mal se acomodan por código (por ejemplo, un "no hay enfermedades" general no se le asigna a un solo híbrido), y lo que el modelo inventa se descarta: un híbrido que no nombraste, un stand que no dijiste cerca de su híbrido, un dato del lote (provincia, localidad, lote, cultivo, ensayo, estadio) que no aparece en el audio, un hallazgo que no aparece en lo que dijiste, un "no hay" que no dijiste (y un "no hay" nunca borra algo que nombraste en el mismo audio), y un porcentaje o una cantidad por metro que no dijiste cerca del nombre ("hay presencia de mancha marrón" queda sin % de incidencia). Al arrancar, el bot precarga Whisper y el modelo de Ollama para que el primer audio no pague la carga.
+Cada audio pasa por hasta cuatro pedidos cortos al modelo de lenguaje, en vez de uno enorme: (1) lote, híbridos, stand y estado (siempre); (2) malezas, plagas y enfermedades, con los "no hay" (solo si el audio habla de eso); (3) umbral, acciones y comentarios (solo si los menciona); (4) productos a aplicar o ya aplicados, con su dosis (solo si el audio habla de aplicar o nombra un producto). Un audio solo de stands hace un único pedido. Con un modelo chico y solo CPU, lo que más tarda es *escribir* la respuesta (unas 7 palabras-pieza por segundo), así que se le pide que omita todo campo vacío. Los datos que el modelo atribuye mal se acomodan por código (por ejemplo, un "no hay enfermedades" general no se le asigna a un solo híbrido), y lo que el modelo inventa se descarta: un híbrido que no nombraste, un stand que no dijiste cerca de su híbrido, un dato del lote (provincia, localidad, lote, cultivo, ensayo, estadio) que no aparece en el audio, un hallazgo que no aparece en lo que dijiste, un "no hay" que no dijiste (y un "no hay" nunca borra algo que nombraste en el mismo audio), y un porcentaje o una cantidad por metro que no dijiste cerca del nombre ("hay presencia de mancha marrón" queda sin % de incidencia). Al arrancar, el bot precarga Whisper y el modelo de Ollama para que el primer audio no pague la carga.
 
 ### Correcciones manuales
 
@@ -39,6 +51,7 @@ Las correcciones no pasan por el modelo de lenguaje: se hacen a mano, con exacti
 - `/corregir 2 stand 3,1` (también hibrido, estado, tratamiento, acciones, comentarios, umbral)
 - `/corregir 2 sin plagas` o `/corregir todos sin enfermedades` (deja constancia de que no hay)
 - `/corregir 2 estado -` borra un dato; `/corregir 2 limpiar plagas` vacía una lista
+- `/corregir 2 limpiar productos` (o `todos`) saca los productos a aplicar
 - `/eliminar 2` saca un híbrido del borrador
 
 ### Vocabulario precargado
@@ -47,7 +60,7 @@ Con `/agregar` cargás a mano híbridos o variedades, malezas, plagas, enfermeda
 
 ### Datos que registra
 
-Provincia, localidad, lote, cultivo, híbrido/variedad (varios por lote), ensayo, tratamiento (un mismo ensayo puede tener varios tratamientos o cultivares), estadio fenológico, stand de plantas (con cálculo automático si decís "N plantas en M metros"), estado del cultivo, malezas (nombre, tamaño, % de cobertura), plagas (nombre, cantidad por metro lineal, % de daño), enfermedades (nombre, % de incidencia, severidad), umbral de daño económico, acciones a realizar, comentarios, ubicación (si la compartís) y la transcripción original completa.
+Provincia, localidad, lote, cultivo, híbrido/variedad (varios por lote), ensayo, tratamiento (un mismo ensayo puede tener varios tratamientos o cultivares), estadio fenológico, stand de plantas (con cálculo automático si decís "N plantas en M metros"), estado del cultivo, malezas (nombre, tamaño, % de cobertura), plagas (nombre, cantidad por metro lineal, % de daño), enfermedades (nombre, % de incidencia, severidad), umbral de daño económico, acciones a realizar, productos a aplicar o ya aplicados (con principio activo, dosis, objetivo, momento, coadyuvante y volumen de caldo), comentarios, ubicación (si la compartís) y la transcripción original completa.
 
 ### Catálogo de lotes
 
@@ -61,7 +74,7 @@ Varios usuarios pueden usar el mismo bot, cada uno viendo y exportando solo sus 
 
 Además del bot, hay un panel web (`panel.py`, hecho con Streamlit) para ver y corregir los datos desde la compu o el celular:
 
-- **Recorridas**: tabla con filtros (período, técnico, localidad, lote, cultivo y búsqueda libre), corrección de cualquier dato con doble clic, detalle de cada registro (malezas, plagas y enfermedades, con la constancia de "sin presencia", y la transcripción original), eliminación y descarga a Excel de lo filtrado.
+- **Recorridas**: tabla con filtros (período, técnico, localidad, lote, cultivo y búsqueda libre), corrección de cualquier dato con doble clic, detalle de cada registro (malezas, plagas y enfermedades, con la constancia de "sin presencia"; productos con su dosis, y la transcripción original), eliminación y descarga a Excel de lo filtrado.
 - **Lotes**: la lista de lotes que el bot usa para reconocerlos en los audios.
 - **Vocabulario**: cargar, corregir y quitar entradas de cada tipo, unir duplicados (por ejemplo `ST9939` y `ST9939 VIP3`) y ver lo que el bot ya trae de fábrica.
 
@@ -85,7 +98,7 @@ Después mandale `/panel` al bot y abrí el link. En el servidor el panel se pub
 - `/corregir ...` y `/eliminar <n>`: corrigen el borrador a mano (ver arriba).
 - `/lote`: muestra el lote abierto y cuántos híbridos lleva guardados.
 - `/cerrar`: cierra el lote abierto; el próximo audio abre uno nuevo.
-- `/agregar <tipo> <nombre>`: precarga vocabulario. Tipos: `hibrido`, `maleza`, `plaga`, `enfermedad`, `ensayo`, `localidad`, `termino`, `nota`. Se pueden cargar varios (uno por línea) y sinónimos con `=`.
+- `/agregar <tipo> <nombre>`: precarga vocabulario. Tipos: `hibrido`, `maleza`, `plaga`, `enfermedad`, `producto`, `ensayo`, `localidad`, `termino`, `nota`. Se pueden cargar varios (uno por línea) y sinónimos con `=`.
 - `/catalogo`: lista el vocabulario cargado. `/quitar <tipo> <nombre>` borra una entrada.
 - `/panel`: te manda tu link personal al panel web (vale 12 horas).
 - `/cancelar`: descarta el borrador en curso (te pregunta si lo querés guardar para después).

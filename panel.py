@@ -38,6 +38,7 @@ ETIQUETAS_TIPO = {
     "maleza": "Malezas",
     "plaga": "Plagas",
     "enfermedad": "Enfermedades",
+    "producto": "Productos",
     "ensayo": "Ensayos",
     "localidad": "Localidades",
     "termino": "Términos",
@@ -49,6 +50,8 @@ AYUDA_TIPO = {
     "maleza": "Los sinónimos son otros nombres (científico o regional) que se guardan con el nombre principal.",
     "plaga": "Los sinónimos son otros nombres (científico o regional) que se guardan con el nombre principal.",
     "enfermedad": "Los sinónimos son otros nombres (científico o regional) que se guardan con el nombre principal.",
+    "producto": "Marcas o principios activos que usan seguido. En sinónimos poné cómo la escribe mal la transcripción. "
+    "No hace falta cargarlos todos: el bot ya conoce los 7.400 productos inscriptos en SENASA.",
     "ensayo": "Nombres o códigos de los ensayos.",
     "localidad": "Pueblos o parajes. En sinónimos poné cómo la escribe mal la transcripción.",
     "termino": "La palabra correcta, y en sinónimos cómo la escribe mal la transcripción.",
@@ -59,6 +62,7 @@ EJEMPLOS_TIPO = {
     "maleza": "rama negra = conyza, buva",
     "plaga": "isoca medidora = rachiplusia",
     "enfermedad": "mancha ojo de rana = cercospora sojina",
+    "producto": "Roundup Full II = randap",
     "ensayo": "comparativo de rendimiento",
     "localidad": "Rancagua = Rancawa",
     "termino": "variedad = válida, valida",
@@ -248,6 +252,41 @@ def _detalle_recorrida(registro: dict, de_usuario: int | None, nombres: dict[int
                     _guardado(f"✅ Guardé malezas, plagas y enfermedades del registro N° {rid}.")
                 st.error("No se pudo guardar (puede que el registro ya no exista).")
 
+        st.divider()
+        _productos_de_recorrida(registro, rid, clave, de_usuario)
+
+
+def _productos_de_recorrida(registro: dict, rid: int, clave: str, de_usuario: int | None) -> None:
+    """Tabla para corregir los productos a aplicar (o ya aplicados) de un registro."""
+    campos = edicion.CAMPOS_APLICACION
+    tabla = pd.DataFrame(edicion.filas_de_aplicaciones(registro.get("aplicaciones")), columns=list(campos))
+    config = {}
+    for campo, titulo in campos.items():
+        if campo in ("dosis", "volumen_caldo"):
+            tabla[campo] = pd.to_numeric(tabla[campo], errors="coerce").astype("float64")
+            config[campo] = st.column_config.NumberColumn(titulo, min_value=0)
+        else:
+            tabla[campo] = tabla[campo].astype("string")
+            config[campo] = st.column_config.TextColumn(titulo, required=campo == "producto")
+    config["estado"] = st.column_config.SelectboxColumn("Estado", options=list(edicion.ESTADO_TEXTO.values()), required=True)
+    config["unidad"] = st.column_config.SelectboxColumn("Unidad", options=edicion.UNIDADES_DOSIS)
+    config["principio_activo"] = st.column_config.TextColumn(
+        "Principio activo", help="Si lo dejás vacío, se completa solo con el registro de SENASA."
+    )
+    st.markdown("**Productos (a aplicar o ya aplicados)**")
+    editada = st.data_editor(
+        tabla, key=f"aplicaciones_{clave}", num_rows="dynamic", hide_index=True, column_config=config, placeholder="—",
+    )
+    if st.button("💾 Guardar productos", type="primary", key=f"guardar_aplicaciones_{clave}"):
+        try:
+            cambios = {"aplicaciones": edicion.aplicaciones_para_guardar(editada.to_dict("records"))}
+        except ValueError as error:
+            st.error(str(error))
+        else:
+            if correr(lambda db: db.actualizar_recorrida(rid, cambios, de_usuario)):
+                _guardado(f"✅ Guardé los productos del registro N° {rid}.")
+            st.error("No se pudo guardar (puede que el registro ya no exista).")
+
 
 def pagina_recorridas(usuario: acceso.UsuarioPanel, de_usuario: int | None, nombres: dict[int, str]) -> None:
     st.header("📋 Recorridas")
@@ -275,9 +314,12 @@ def pagina_recorridas(usuario: acceso.UsuarioPanel, de_usuario: int | None, nomb
 
     st.caption(
         "Hacé doble clic en una celda para corregirla y después tocá «Guardar cambios». "
-        "Malezas, plagas y enfermedades se corrigen más abajo, en el detalle de cada registro."
+        "Malezas, plagas, enfermedades y productos se corrigen más abajo, en el detalle de cada registro."
     )
-    orden = ["id", "fecha", *(["tecnico"] if usuario.es_admin else []), *edicion.COLUMNAS_RECORRIDA, *edicion.LISTAS]
+    orden = [
+        "id", "fecha", *(["tecnico"] if usuario.es_admin else []), *edicion.COLUMNAS_RECORRIDA, *edicion.LISTAS,
+        "aplicaciones",
+    ]
     config = {
         "id": st.column_config.NumberColumn("N°", format="%d", width="small"),
         "fecha": st.column_config.DatetimeColumn("Fecha", format="DD/MM/YY HH:mm"),
@@ -288,6 +330,7 @@ def pagina_recorridas(usuario: acceso.UsuarioPanel, de_usuario: int | None, nomb
             "Umbral", options=list(edicion.UMBRAL_TEXTO.values()), required=True
         ),
         **{lista: st.column_config.TextColumn(titulo) for lista, titulo in edicion.LISTAS.items()},
+        "aplicaciones": st.column_config.TextColumn("Productos"),
     }
     clave_tabla = f"recorridas_{hash(tuple(filtrada['id']))}_{_version()}"
     editada = st.data_editor(
@@ -296,7 +339,7 @@ def pagina_recorridas(usuario: acceso.UsuarioPanel, de_usuario: int | None, nomb
         hide_index=True,
         column_order=orden,
         column_config=config,
-        disabled=["id", "fecha", "tecnico", *edicion.LISTAS],
+        disabled=["id", "fecha", "tecnico", *edicion.LISTAS, "aplicaciones"],
         placeholder="—",
     )
 

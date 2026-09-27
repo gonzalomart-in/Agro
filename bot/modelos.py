@@ -49,6 +49,25 @@ class Enfermedad(BaseModel):
     observacion: str | None = None
 
 
+class EstadoAplicacion(str, Enum):
+    RECOMENDADA = "recomendada"
+    REALIZADA = "realizada"
+
+
+class Aplicacion(BaseModel):
+    """Un producto fitosanitario que el técnico recomienda aplicar (o dice que ya se aplicó)."""
+
+    producto: str
+    principio_activo: str | None = None
+    dosis: float | None = None
+    unidad: str | None = None
+    objetivo: str | None = None
+    momento: str | None = None
+    coadyuvante: str | None = None
+    volumen_caldo: float | None = None
+    estado: EstadoAplicacion = EstadoAplicacion.RECOMENDADA
+
+
 class Lote(BaseModel):
     """Entrada del catálogo de lotes de un usuario."""
 
@@ -157,6 +176,23 @@ def _fusionar_items(actuales: list, nuevos: list) -> None:
             actuales.append(item)
 
 
+def _clave_aplicacion(aplicacion: Aplicacion) -> tuple[str, str]:
+    return normalizar_texto(aplicacion.producto), aplicacion.estado.value
+
+
+def fusionar_aplicaciones(actuales: list[Aplicacion], nuevas: list[Aplicacion]) -> None:
+    """Agrega `nuevas` a `actuales`; el mismo producto (recomendado o ya aplicado) dicho de
+    nuevo reemplaza al anterior (por ejemplo, para corregir la dosis)."""
+    for nueva in nuevas:
+        clave = _clave_aplicacion(nueva)
+        for i, actual in enumerate(actuales):
+            if _clave_aplicacion(actual) == clave:
+                actuales[i] = nueva
+                break
+        else:
+            actuales.append(nueva)
+
+
 class Relevamiento(BaseModel):
     """Malezas, plagas y enfermedades, con la constancia explícita de cuando NO hay."""
 
@@ -215,6 +251,7 @@ class Hibrido(Relevamiento):
 
     acciones: str | None = None
     comentarios: str | None = None
+    aplicaciones: list[Aplicacion] = Field(default_factory=list)
 
     CAMPOS_CLAVE_HIBRIDO: ClassVar[tuple[str, ...]] = (
         "hibrido_variedad",
@@ -242,9 +279,13 @@ class Hibrido(Relevamiento):
         if otro.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO:
             self.umbral_dano_economico = otro.umbral_dano_economico
         self.fusionar_relevamientos(otro)
+        fusionar_aplicaciones(self.aplicaciones, otro.aplicaciones)
 
     def con_generales(self, generales: "Relevamiento") -> "Hibrido":
-        """Copia del híbrido que hereda de `generales` lo que él no informó por su cuenta."""
+        """Copia del híbrido que hereda de `generales` lo que él no informó por su cuenta.
+
+        Las aplicaciones se suman: lo que se recomienda para todo el lote vale también para
+        cada híbrido, salvo que para ese híbrido se haya dicho el mismo producto."""
         copia = self.model_copy(deep=True)
         for lista, sin in _LISTAS_Y_FLAGS:
             if not getattr(copia, lista) and not getattr(copia, sin):
@@ -253,6 +294,9 @@ class Hibrido(Relevamiento):
         for campo in ("acciones", "comentarios"):
             if getattr(copia, campo) is None:
                 setattr(copia, campo, getattr(generales, campo, None))
+        propias = {_clave_aplicacion(a) for a in copia.aplicaciones}
+        del_lote = [a.model_copy() for a in getattr(generales, "aplicaciones", []) if _clave_aplicacion(a) not in propias]
+        copia.aplicaciones = del_lote + copia.aplicaciones
         umbral_general = getattr(generales, "umbral_dano_economico", UmbralDanoEconomico.NO_EVALUADO)
         if copia.umbral_dano_economico == UmbralDanoEconomico.NO_EVALUADO:
             copia.umbral_dano_economico = umbral_general
@@ -266,6 +310,10 @@ class RecorridaAudio(CabeceraLote, Relevamiento):
     umbral_dano_economico: UmbralDanoEconomico = UmbralDanoEconomico.NO_EVALUADO
     acciones: str | None = None
     comentarios: str | None = None
+    aplicaciones: list[Aplicacion] = Field(
+        default_factory=list,
+        description="Productos a aplicar (o ya aplicados) en todo el lote",
+    )
 
     hibridos: list[Hibrido] = Field(
         default_factory=list,
@@ -273,20 +321,32 @@ class RecorridaAudio(CabeceraLote, Relevamiento):
     )
     transcripcion_original: str | None = None
 
+    def tiene_datos_generales(self) -> bool:
+        """True si hay algo dicho para todo el lote (malezas, productos, comentarios...)."""
+        return bool(
+            any(getattr(self, lista) or getattr(self, sin) for lista, sin in _LISTAS_Y_FLAGS)
+            or self.acciones
+            or self.comentarios
+            or self.aplicaciones
+            or self.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO
+        )
+
     def tiene_datos(self) -> bool:
         """False si el audio no aportó nada (ni lote, ni híbridos, ni datos generales)."""
         return bool(
             self.hibridos
             or any(getattr(self, c) is not None for c in CabeceraLote.model_fields)
-            or any(getattr(self, lista) or getattr(self, sin) for lista, sin in _LISTAS_Y_FLAGS)
-            or self.acciones
-            or self.comentarios
-            or self.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO
+            or self.tiene_datos_generales()
         )
 
     def hibridos_efectivos(self) -> list[Hibrido]:
         """Los híbridos con los datos generales del lote ya aplicados."""
         return [h.con_generales(self) for h in self.hibridos]
+
+    def solo_datos_del_lote(self) -> bool:
+        """True si no se nombró ningún híbrido pero hay datos para todo el lote (por ejemplo, un
+        audio que solo recomienda un producto después de haber guardado los híbridos)."""
+        return not self.hibridos and self.tiene_datos_generales()
 
     def combinar(self, nuevo: "RecorridaAudio") -> tuple[list[str], list[str]]:
         """Suma lo extraído de otro audio a este borrador.
@@ -302,6 +362,7 @@ class RecorridaAudio(CabeceraLote, Relevamiento):
         for campo in ("acciones", "comentarios"):
             if getattr(nuevo, campo) is not None:
                 setattr(self, campo, getattr(nuevo, campo))
+        fusionar_aplicaciones(self.aplicaciones, nuevo.aplicaciones)
         if nuevo.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO:
             self.umbral_dano_economico = nuevo.umbral_dano_economico
         if nuevo.transcripcion_original:
@@ -329,14 +390,16 @@ class RecorridaAudio(CabeceraLote, Relevamiento):
         return agregados, actualizados
 
     def fichas(self, cabecera: CabeceraLote) -> list["RecorridaCampo"]:
-        """Una fila lista para guardar por cada híbrido, con los datos del lote `cabecera`."""
+        """Una fila lista para guardar por cada híbrido, con los datos del lote `cabecera`.
+        Si solo hay datos para todo el lote, una única fila sin híbrido, para no perderlos."""
+        hibridos = [Hibrido().con_generales(self)] if self.solo_datos_del_lote() else self.hibridos_efectivos()
         return [
             RecorridaCampo(
                 **cabecera.model_dump(),
                 **h.model_dump(),
                 transcripcion_original=self.transcripcion_original,
             )
-            for h in self.hibridos_efectivos()
+            for h in hibridos
         ]
 
 

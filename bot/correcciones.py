@@ -23,6 +23,7 @@ AYUDA_CORREGIR = (
     "Opciones: malezas, plagas, enfermedades\n\n"
     "Borrar un dato: /corregir 2 estado -\n"
     "Vaciar una lista: /corregir 2 limpiar plagas\n"
+    "Sacar los productos a aplicar: /corregir 2 limpiar productos (o /corregir todos limpiar productos)\n"
     "Sacar un híbrido del borrador: /eliminar 2\n\n"
     "Para agregar o cambiar más cosas también podés mandar otro audio o texto: "
     "si nombra un híbrido que ya está, lo actualiza."
@@ -56,6 +57,8 @@ _LISTAS = {
 }
 
 _BORRAR = {"-", "borrar", "nada", "ninguno"}
+
+_PRODUCTOS = {"producto", "productos", "aplicacion", "aplicaciones"}
 
 
 class ErrorCorreccion(Exception):
@@ -126,6 +129,15 @@ def aplicar_correccion(borrador: RecorridaAudio, argumentos: str) -> str:
             setattr(hibrido, lista, [])
             setattr(hibrido, f"sin_{lista}", True)
         return f"✅ {etiqueta}: sin {lista} (confirmado)"
+
+    if campo == "limpiar" and normalizar_texto(valor) in _PRODUCTOS:
+        destinos = [borrador, *borrador.hibridos] if objetivo is None else [borrador.hibridos[objetivo - 1]]
+        for destino in destinos:
+            destino.aplicaciones = []
+        aviso = ""
+        if objetivo is not None and borrador.aplicaciones:
+            aviso = " (quedan los que son para todo el lote: /corregir todos limpiar productos)"
+        return f"✅ {etiqueta}: productos a aplicar borrados{aviso}"
 
     if campo == "limpiar":
         lista = _lista(valor)

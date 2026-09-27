@@ -12,13 +12,14 @@ from difflib import SequenceMatcher, get_close_matches
 
 from .modelos import RecorridaAudio, etiqueta_material, normalizar_texto
 
-TIPOS = ("hibrido", "maleza", "plaga", "enfermedad", "ensayo", "localidad", "termino", "nota")
+TIPOS = ("hibrido", "maleza", "plaga", "enfermedad", "producto", "ensayo", "localidad", "termino", "nota")
 
 TITULOS = {
     "hibrido": "Híbridos/variedades",
     "maleza": "Malezas",
     "plaga": "Plagas",
     "enfermedad": "Enfermedades",
+    "producto": "Productos fitosanitarios",
     "ensayo": "Ensayos",
     "localidad": "Localidades",
     "termino": "Términos técnicos (palabra correcta = cómo la escribe mal)",
@@ -36,6 +37,12 @@ _ALIAS_TIPO = {
     "plagas": "plaga",
     "enfermedad": "enfermedad",
     "enfermedades": "enfermedad",
+    "producto": "producto",
+    "productos": "producto",
+    "fitosanitario": "producto",
+    "fitosanitarios": "producto",
+    "agroquimico": "producto",
+    "agroquimicos": "producto",
     "ensayo": "ensayo",
     "ensayos": "ensayo",
     "localidad": "localidad",
@@ -211,6 +218,21 @@ def unificar_nombres(audio: RecorridaAudio, entradas: list[EntradaCatalogo]) -> 
         unificar_relevamiento(h)
 
 
+def nombre_de_adversidad(nombre: str, entradas: list[EntradaCatalogo]) -> str:
+    """El nombre oficial de una maleza, plaga o enfermedad ("conyza" -> "rama negra"), para lo que
+    se quiere controlar con un producto. Si no está en el vocabulario, queda como está."""
+    clave = normalizar_texto(nombre)
+    for tipo in ("maleza", "plaga", "enfermedad"):
+        indice = _indice(entradas, tipo)
+        if clave in indice:
+            return indice[clave]
+    for tipo in ("maleza", "plaga", "enfermedad"):
+        oficial = _oficial(nombre, _indice(entradas, tipo), clave, True)
+        if oficial != nombre:
+            return oficial
+    return nombre
+
+
 def _funcion_clave(tipo: str):
     return clave_hibrido if tipo == "hibrido" else normalizar_texto
 
@@ -259,6 +281,7 @@ def sinonimos_utiles(oficial: str, sinonimos: list[str]) -> list[str]:
 
 # Whisper solo lee los últimos ~224 tokens de la pista: se le da un presupuesto en caracteres.
 PRESUPUESTO_PISTA_WHISPER = 650
+PRESUPUESTO_PRODUCTOS_WHISPER = 100
 
 
 def _lista_que_entre(prefijo: str, nombres: list[str], presupuesto: int) -> str:
@@ -273,7 +296,8 @@ def _lista_que_entre(prefijo: str, nombres: list[str], presupuesto: int) -> str:
 
 
 def texto_para_whisper(entradas: list[EntradaCatalogo], cultivo: str | None = None) -> str:
-    """Pista para Whisper: los híbridos/variedades cargados, las localidades y las palabras técnicas.
+    """Pista para Whisper: los híbridos/variedades cargados, las localidades, los productos y las
+    palabras técnicas.
 
     Solo listas de nombres, sin frases de ejemplo: Whisper a veces "repite" la pista como si se
     hubiera dicho, y una frase como "el 9939 tiene 3,5 plantas al metro" terminaba cargada como
@@ -287,18 +311,20 @@ def texto_para_whisper(entradas: list[EntradaCatalogo], cultivo: str | None = No
 
     etiqueta = etiqueta_material(cultivo)[1].capitalize()
 
-    # de más a menos importante: cada parte usa lo que queda del presupuesto
+    # de más a menos importante: cada parte usa lo que queda del presupuesto (los productos, como
+    # mucho PRESUPUESTO_PRODUCTOS_WHISPER, para no dejar sin lugar a los términos)
     partes_por_importancia: list[str] = []
     restante = PRESUPUESTO_PISTA_WHISPER
-    for prefijo, lista in (
-        (f"{etiqueta}:", nombres("hibrido")),
-        ("Localidades:", nombres("localidad")),
-        ("Términos:", nombres("termino")),
-        ("Malezas, plagas y enfermedades:", nombres("maleza") + nombres("plaga") + nombres("enfermedad")),
+    for prefijo, lista, tope in (
+        (f"{etiqueta}:", nombres("hibrido"), None),
+        ("Localidades:", nombres("localidad"), None),
+        ("Productos:", nombres("producto"), PRESUPUESTO_PRODUCTOS_WHISPER),
+        ("Términos:", nombres("termino"), None),
+        ("Malezas, plagas y enfermedades:", nombres("maleza") + nombres("plaga") + nombres("enfermedad"), None),
     ):
         if not lista:
             continue
-        parte = _lista_que_entre(prefijo, lista, restante)
+        parte = _lista_que_entre(prefijo, lista, min(restante, tope or restante))
         if parte and len(parte) <= restante:
             partes_por_importancia.append(parte)
             restante -= len(parte) + 1
@@ -331,7 +357,8 @@ def quitar_eco_de_pista(texto: str, pista: str) -> str:
 _SEPARADOR_PARTIDO = r"[\s,.\-]{0,2}"
 _DECIMAL_PARTIDO = re.compile(
     r"(?<![\d,.])(\d{1,3})\s*[,.]\s+(\d{1,2})"
-    r"(?=\s*(?:plantas?\b|pl\b|%|por\s+ciento|por\s+metro|al\s+metro|cm\b|cent[ií]metros|metros?\b))",
+    r"(?=\s*(?:plantas?\b|pl\b|%|por\s+ciento|por\s+metro|al\s+metro|cm\b|cent[ií]metros|metros?\b|"
+    r"litros?\b|l\b|l/ha\b|cc\b|gramos?\b|kilos?\b|kg\b))",
     re.IGNORECASE,
 )
 _DECIMAL_HABLADO = re.compile(r"(?<![\d,.])(\d{1,3})\s+coma\s+(\d{1,2})(?!\d)", re.IGNORECASE)

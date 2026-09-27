@@ -58,7 +58,9 @@ def _teclado_borrador(
 ) -> InlineKeyboardMarkup:
     cantidad = len(borrador.hibridos)
     singular, plural = etiqueta_material(borrador.completar_con(abierta).cultivo)
-    if cantidad == 0 and abierta is None:
+    if borrador.solo_datos_del_lote():
+        etiqueta = "✅ Guardar para todo el lote"
+    elif cantidad == 0 and abierta is None:
         etiqueta = "✅ Abrir lote"
     elif cantidad == 1:
         etiqueta = f"✅ Guardar {singular}"
@@ -230,7 +232,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Cada uno se procesa por separado y se suma a un borrador. Podés contar el lote "
         "(provincia, localidad, lote, cultivo, ensayo, estadio) y los híbridos con su stand, "
         "estado, malezas, plagas y enfermedades, hablando libremente. Decí también cuando "
-        "NO hay presencia de algo.\n"
+        "NO hay presencia de algo, y qué productos recomendás aplicar (o ya se aplicaron) con su dosis.\n"
         "2) Mirá el borrador con /borrador y corregí lo que haga falta con /corregir.\n"
         "3) Confirmá con el botón verde: se abre el lote y se guardan los híbridos.\n"
         "4) Cuando termines el lote, mandá /cerrar; el próximo audio abre un lote nuevo.\n\n"
@@ -381,13 +383,14 @@ async def cmd_agregar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if tipo is None:
         await update.message.reply_text(
             "Uso: /agregar <tipo> <nombre>\n"
-            "Tipos: hibrido (o variedad), maleza, plaga, enfermedad, ensayo, localidad, termino, nota\n\n"
+            "Tipos: hibrido (o variedad), maleza, plaga, enfermedad, producto, ensayo, localidad, termino, nota\n\n"
             "Podés cargar varios de una vez, uno por línea, y agregar sinónimos con \"=\":\n"
             "/agregar maleza\n"
             "rama negra = conyza, buva\n"
             "yuyo colorado = amaranthus\n\n"
             "Ejemplos: /agregar hibrido 9939 (en soja: /agregar variedad DM46i20)\n"
             "/agregar localidad Rancagua (para que no la escriba mal)\n"
+            "/agregar producto Roundup Full II = randap (la marca, y cómo la escribe mal)\n"
             "/agregar nota el testigo es el híbrido 9939\n\n"
             "Para corregir una palabra que Whisper escribe mal, poné la correcta y después "
             "cómo la escribe mal:\n"
@@ -696,7 +699,10 @@ async def _guardar_borrador_confirmado(query, context: ContextTypes.DEFAULT_TYPE
     lineas = []
     if lote_recien_abierto:
         lineas.append(f"📂 Lote abierto: {cabecera.lote}.")
-    if nombres:
+    if nombres and borrador.solo_datos_del_lote():
+        total = await db.contar_recorridas_visita(visita_id)
+        lineas.append(f"✅ Guardé los datos para todo el lote. Llevás {total} registro(s) en este lote.")
+    elif nombres:
         total = await db.contar_recorridas_visita(visita_id)
         lineas.append(
             f"✅ Guardé {len(nombres)} {etiqueta_material(cabecera.cultivo)[0]}(s): {', '.join(nombres)}. "

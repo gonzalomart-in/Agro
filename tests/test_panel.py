@@ -34,7 +34,11 @@ class BaseFalsa:
     def __init__(self):
         self.llamadas: list[tuple] = []
         self.recorridas = [
-            _recorrida(1, ADMIN, enfermedades='[{"nombre": "mancha marrón", "porcentaje_incidencia": null}]'),
+            _recorrida(
+                1, ADMIN, enfermedades='[{"nombre": "mancha marrón", "porcentaje_incidencia": null}]',
+                aplicaciones='[{"producto": "Coragen", "principio_activo": null, "dosis": 50, "unidad": "cc/ha", "estado": "recomendada"}]',
+            ),
+            # un registro de antes de que existieran las aplicaciones (sin esa columna)
             _recorrida(2, TECNICO, localidad="San Pedro", lote="La Loma", hibrido_variedad="DM46i20", stand_valor=3.2),
         ]
         self.lotes = [
@@ -76,6 +80,10 @@ class BaseFalsa:
 
     async def agregar_sinonimos(self, tipo, nombre, sinonimos):
         self.llamadas.append(("agregar_sinonimos", tipo, nombre, sinonimos))
+        return True
+
+    async def actualizar_recorrida(self, recorrida_id, cambios, de_usuario):
+        self.llamadas.append(("actualizar_recorrida", recorrida_id, cambios, de_usuario))
         return True
 
 
@@ -185,6 +193,23 @@ def test_si_la_base_no_responde_muestra_un_aviso_en_castellano():
         at = _abrir("token-admin")
     st.cache_resource.clear()
     assert "problema con la base de datos" in _textos(at)
+
+
+def test_productos_de_un_registro_se_guardan_con_su_principio_activo(base):
+    at = _abrir("token-admin")
+    assert "Productos (a aplicar o ya aplicados)" in _textos(at)
+    at.button(key=next(b.key for b in at.button if b.key and b.key.startswith("guardar_aplicaciones_"))).click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    [(_, rid, cambios, _)] = [c for c in base.llamadas if c[0] == "actualizar_recorrida"]
+    assert rid == 1
+    [aplicacion] = cambios["aplicaciones"]
+    assert (aplicacion["producto"], aplicacion["dosis"], aplicacion["unidad"]) == ("Coragen", 50, "cc/ha")
+    assert aplicacion["principio_activo"] == "clorantraniliprole"
+
+
+def test_registro_viejo_sin_productos_se_ve_bien(base):
+    at = _abrir("token-tecnico")
+    assert "Productos (a aplicar o ya aplicados)" in _textos(at)
 
 
 def test_cerrar_sesion(base):
