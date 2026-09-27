@@ -49,7 +49,7 @@ def _formatear_maleza(m) -> str:
     if m.tamano:
         partes.append(f"tamaño: {m.tamano}")
     if m.porcentaje_cobertura is not None:
-        partes.append(f"cobertura: {m.porcentaje_cobertura}%")
+        partes.append(f"cobertura: {_numero(m.porcentaje_cobertura)}%")
     if m.observacion:
         partes.append(m.observacion)
     return " - ".join(partes)
@@ -58,9 +58,9 @@ def _formatear_maleza(m) -> str:
 def _formatear_plaga(p) -> str:
     partes = [p.nombre]
     if p.cantidad_por_metro_lineal is not None:
-        partes.append(f"{p.cantidad_por_metro_lineal}/m lineal")
+        partes.append(f"{_numero(p.cantidad_por_metro_lineal)} individuos por metro lineal")
     if p.porcentaje_dano is not None:
-        partes.append(f"daño: {p.porcentaje_dano}%")
+        partes.append(f"daño: {_numero(p.porcentaje_dano)}%")
     if p.observacion:
         partes.append(p.observacion)
     return " - ".join(partes)
@@ -69,7 +69,7 @@ def _formatear_plaga(p) -> str:
 def _formatear_enfermedad(e) -> str:
     partes = [e.nombre]
     if e.porcentaje_incidencia is not None:
-        partes.append(f"incidencia: {e.porcentaje_incidencia}%")
+        partes.append(f"incidencia: {_numero(e.porcentaje_incidencia)}%")
     if e.severidad:
         partes.append(f"severidad: {e.severidad}")
     if e.observacion:
@@ -301,11 +301,16 @@ def _lineas_relevamientos_simple(obj) -> list[str]:
     return lineas
 
 
+_UMBRAL_TEXTO = {"superado": "superado", "cercano": "cercano", "no_superado": "no superado"}
+_UNIDAD_STAND_TEXTO = {"pl/m lineal": "plantas por metro lineal", "pl/m2": "plantas por m²", "pl/ha": "plantas por hectárea"}
+
+
 def _lineas_generales_simple(obj) -> list[str]:
     """Umbral, acciones, productos y comentarios: valen para un híbrido o para todo el lote."""
     lineas = _lineas_relevamientos_simple(obj)
     if obj.umbral_dano_economico != UmbralDanoEconomico.NO_EVALUADO:
-        lineas.append(f"Umbral de daño económico: {obj.umbral_dano_economico.value}")
+        valor = obj.umbral_dano_economico.value
+        lineas.append(f"Umbral de daño económico: {_UMBRAL_TEXTO.get(valor, valor)}")
     _agregar(lineas, "Acciones", obj.acciones)
     lineas.extend(formatear_aplicacion(a) for a in obj.aplicaciones)
     _agregar(lineas, "Comentarios", obj.comentarios)
@@ -319,7 +324,7 @@ def _lineas_hibrido_simple(h: Hibrido, singular: str, con_nombre: bool = True) -
     _agregar(lineas, "Tratamiento", h.tratamiento)
     if h.stand_valor is not None:
         unidad = h.stand_unidad.value if h.stand_unidad else ""
-        lineas.append(f"Stand de plantas: {_numero(h.stand_valor)} {unidad}".strip())
+        lineas.append(f"Stand de plantas: {_numero(h.stand_valor)} {_UNIDAD_STAND_TEXTO.get(unidad, unidad)}".strip())
     _agregar(lineas, "Estado del cultivo", h.estado_cultivo)
     lineas.extend(_lineas_generales_simple(h))
     return lineas
@@ -338,13 +343,15 @@ def resumen_simple(nuevo: RecorridaAudio) -> str:
     _agregar(lineas, "Ensayo", nuevo.ensayo)
     _agregar(lineas, "Estadío fenológico", nuevo.estadio_fenologico)
 
-    efectivos = nuevo.hibridos_efectivos()
-    if not efectivos:
+    if not nuevo.hibridos:
         lineas.extend(_lineas_generales_simple(nuevo))
-    elif len(efectivos) == 1:
-        lineas.extend(_lineas_hibrido_simple(efectivos[0], singular))
+    elif len(nuevo.hibridos) == 1:
+        # con un solo híbrido, lo dicho para todo el lote se muestra junto con lo suyo
+        lineas.extend(_lineas_hibrido_simple(nuevo.hibridos_efectivos()[0], singular))
     else:
-        for h in efectivos:
+        # con varios, lo del lote entero va una sola vez y cada híbrido muestra solo lo suyo
+        lineas.extend(_lineas_generales_simple(nuevo))
+        for h in nuevo.hibridos:
             if lineas:
                 lineas.append("")
             lineas.extend(_lineas_hibrido_simple(h, singular))

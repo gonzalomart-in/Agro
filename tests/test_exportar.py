@@ -22,8 +22,6 @@ def _registro(**overrides):
         "umbral_dano_economico": "no_evaluado",
         "acciones": "ninguna",
         "comentarios": "ok",
-        "latitud": None,
-        "longitud": None,
         "transcripcion_original": "texto",
     }
     base.update(overrides)

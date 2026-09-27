@@ -152,7 +152,7 @@ def test_resumen_simple_con_un_solo_hibrido_lo_deja_todo_junto():
     texto = resumen_simple(audio)
     assert "Lote: Las Lilas" in texto
     assert "Híbrido: 9939" in texto
-    assert "Stand de plantas: 3 pl/m lineal" in texto
+    assert "Stand de plantas: 3 plantas por metro lineal" in texto
     assert "Estado del cultivo: bueno" in texto
     assert "❓" not in texto
     assert "Falta" not in texto
@@ -163,7 +163,22 @@ def test_resumen_simple_con_varios_hibridos_los_separa_con_una_linea_en_blanco()
     texto = resumen_simple(audio)
     assert "Híbrido/variedad: 9939" in texto
     assert "Híbrido/variedad: 9937" in texto
-    assert texto == "Híbrido/variedad: 9939\nStand de plantas: 3 pl/m lineal\n\nHíbrido/variedad: 9937\nStand de plantas: 2.9 pl/m lineal"
+    assert texto == (
+        "Híbrido/variedad: 9939\nStand de plantas: 3 plantas por metro lineal\n\n"
+        "Híbrido/variedad: 9937\nStand de plantas: 2.9 plantas por metro lineal"
+    )
+
+
+def test_resumen_simple_con_varios_hibridos_muestra_una_sola_vez_lo_del_lote():
+    audio = RecorridaAudio(
+        cultivo="maíz", acciones="aplicar Coragen en el 9939", sin_enfermedades=True,
+        hibridos=[_h("9939", 3), _h("9937", 2.9, sin_plagas=True)],
+    )
+    texto = resumen_simple(audio)
+    assert texto.count("Acciones: aplicar Coragen en el 9939") == 1
+    assert texto.count("Enfermedades: no hay") == 1
+    # lo del lote va antes de los híbridos, y cada híbrido muestra solo lo suyo
+    assert texto.index("Acciones") < texto.index("Híbrido: 9939") < texto.index("Plagas: no hay")
 
 
 def test_resumen_simple_sin_datos_es_vacio():
@@ -278,8 +293,8 @@ def test_resumen_simple_muestra_malezas_plagas_y_enfermedades():
         sin_enfermedades=True,
     )])
     texto = resumen_simple(audio)
-    assert "Maleza: rama negra - tamaño: elongada - cobertura: 5.0%" in texto
-    assert "Plaga: oruga cortadora - 0.5/m lineal" in texto
+    assert "Maleza: rama negra - tamaño: elongada - cobertura: 5%" in texto
+    assert "Plaga: oruga cortadora - 0.5 individuos por metro lineal" in texto
     assert "Enfermedades: no hay" in texto
 
 

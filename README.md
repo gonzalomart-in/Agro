@@ -60,7 +60,7 @@ Con `/agregar` cargás a mano híbridos o variedades, malezas, plagas, enfermeda
 
 ### Datos que registra
 
-Provincia, localidad, lote, cultivo, híbrido/variedad (varios por lote), ensayo, tratamiento (un mismo ensayo puede tener varios tratamientos o cultivares), estadio fenológico, stand de plantas (con cálculo automático si decís "N plantas en M metros"), estado del cultivo, malezas (nombre, tamaño, % de cobertura), plagas (nombre, cantidad por metro lineal, % de daño), enfermedades (nombre, % de incidencia, severidad), umbral de daño económico, acciones a realizar, productos a aplicar o ya aplicados (con principio activo, dosis, objetivo, momento, coadyuvante y volumen de caldo), comentarios, ubicación (si la compartís) y la transcripción original completa.
+Provincia, localidad, lote, cultivo, híbrido/variedad (varios por lote), ensayo, tratamiento (un mismo ensayo puede tener varios tratamientos o cultivares), estadio fenológico, stand de plantas (con cálculo automático si decís "N plantas en M metros"), estado del cultivo, malezas (nombre, tamaño, % de cobertura), plagas (nombre, cantidad por metro lineal, % de daño), enfermedades (nombre, % de incidencia, severidad), umbral de daño económico, acciones a realizar, productos a aplicar o ya aplicados (con principio activo, dosis, objetivo, momento, coadyuvante y volumen de caldo), comentarios y la transcripción original completa.
 
 ### Catálogo de lotes
 

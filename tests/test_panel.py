@@ -25,7 +25,7 @@ def _recorrida(rid: int, usuario: int, **datos) -> dict:
         "estado_cultivo": "bueno", "malezas": "[]", "plagas": "[]", "enfermedades": "[]",
         "sin_malezas": False, "sin_plagas": False, "sin_enfermedades": False,
         "umbral_dano_economico": "no_evaluado", "acciones": None, "comentarios": None,
-        "latitud": None, "longitud": None, "transcripcion_original": "Localidad Rancawa...",
+        "transcripcion_original": "Localidad Rancawa...",
     }
     return {**base, **datos}
 

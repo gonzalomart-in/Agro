@@ -63,8 +63,6 @@ CREATE TABLE IF NOT EXISTS recorridas (
     umbral_dano_economico TEXT NOT NULL DEFAULT 'no_evaluado',
     acciones TEXT,
     comentarios TEXT,
-    latitud DOUBLE PRECISION,
-    longitud DOUBLE PRECISION,
     transcripcion_original TEXT
 );
 
@@ -452,15 +450,15 @@ class BaseDeDatos:
                     localidad, lote, cultivo, hibrido_variedad, ensayo, tratamiento, estadio_fenologico,
                     stand_valor, stand_unidad, estado_cultivo,
                     malezas, plagas, enfermedades, umbral_dano_economico,
-                    acciones, comentarios, latitud, longitud, transcripcion_original,
+                    acciones, comentarios, transcripcion_original,
                     provincia, sin_malezas, sin_plagas, sin_enfermedades, visita_id, aplicaciones
                 ) VALUES (
                     $1, $2, $3,
                     $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13,
                     $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22,
-                    $23, $24, $25, $26, $27, $28
+                    $18, $19, $20,
+                    $21, $22, $23, $24, $25, $26
                 )
                 RETURNING id
                 """,
@@ -483,8 +481,6 @@ class BaseDeDatos:
                 ficha.umbral_dano_economico.value,
                 ficha.acciones,
                 ficha.comentarios,
-                ficha.latitud,
-                ficha.longitud,
                 ficha.transcripcion_original,
                 ficha.provincia,
                 ficha.sin_malezas,

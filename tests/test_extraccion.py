@@ -298,12 +298,50 @@ def test_hallazgo_sin_hibrido_queda_como_dato_general():
     assert audio.enfermedades[0].porcentaje_incidencia == 20
 
 
+# ---------- umbral, tipo de hallazgo y tamaño de malezas ----------
+
+def test_umbral_que_no_se_dijo_se_descarta():
+    from bot.extraccion import _audio_desde_paso_3, _Paso3
+
+    paso3 = _Paso3(umbral_dano_economico="no_superado", acciones="aplicar glifosato")
+    assert _audio_desde_paso_3(paso3, "recomiendo aplicar glifosato").umbral_dano_economico == UmbralDanoEconomico.NO_EVALUADO
+    assert _audio_desde_paso_3(paso3, "el umbral no está superado").umbral_dano_economico == UmbralDanoEconomico.NO_SUPERADO
+
+
+def test_plaga_que_el_modelo_pone_como_maleza_se_corrige_con_el_vocabulario():
+    from bot.vocabulario_base import VOCABULARIO_BASE
+
+    paso2 = _Paso2(hallazgos=[
+        {"tipo": "maleza", "nombre": "cogollero", "porcentaje": 20},
+        {"tipo": "maleza", "nombre": "bolillera", "porcentaje": 20},
+    ])
+    audio = _audio_desde_paso_2(paso2, "hay cogollero con 20% de daño. También hay bolillera, con un daño del 20 por ciento", [], VOCABULARIO_BASE)
+    assert audio.malezas == []
+    assert [(p.nombre, p.porcentaje_dano) for p in audio.plagas] == [("cogollero", 20), ("bolillera", 20)]
+
+
+def test_tamano_de_maleza_en_centimetros_no_es_cobertura():
+    from bot.vocabulario_base import VOCABULARIO_BASE
+
+    paso2 = _Paso2(hallazgos=[{"tipo": "maleza", "nombre": "rama negra", "porcentaje": 10}])
+    texto = "Encontré rama negra de unos 10 centímetros. Hay mancha marrón con 10 por ciento de incidencia"
+    [maleza] = _audio_desde_paso_2(paso2, texto, [], VOCABULARIO_BASE).malezas
+    assert maleza.tamano == "10 cm"
+    assert maleza.porcentaje_cobertura is None  # el 10% era de la mancha marrón
+
+
+def test_tamano_que_repite_el_nombre_no_sirve():
+    paso2 = _Paso2(hallazgos=[{"tipo": "maleza", "nombre": "rama negra", "detalle": "bastante rama negra"}])
+    [maleza] = _audio_desde_paso_2(paso2, "hay bastante rama negra").malezas
+    assert maleza.tamano is None
+
+
 # ---------- esquema compacto ----------
 
 def test_esquema_compacto_no_tiene_variantes_null_ni_defaults_ni_campos_que_el_modelo_no_escribe():
     texto = json.dumps(_esquema_json(1))
     assert '"null"' not in texto and '"default"' not in texto and '"title"' not in texto
-    assert "latitud" not in texto
+    assert "cliente" not in texto  # el cliente se pide en un paso aparte
     assert "stand_unidad" not in texto
     assert "malezas" not in texto  # las malezas no se piden en el paso 1
 

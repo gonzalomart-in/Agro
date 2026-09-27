@@ -7,6 +7,14 @@ def test_normalizar_texto_ignora_tildes_mayusculas_y_espacios():
     assert normalizar_texto(None) == ""
 
 
+def test_borrador_guardado_con_ubicacion_se_sigue_pudiendo_abrir():
+    # borradores y lotes abiertos guardados antes de sacar la ubicación todavía la traen
+    guardado = {"lote": "Las Lilas", "latitud": -33.9, "longitud": -60.5, "hibridos": [{"hibrido_variedad": "9939"}]}
+    borrador = RecorridaAudio.model_validate(guardado)
+    assert borrador.lote == "Las Lilas" and borrador.hibridos[0].hibrido_variedad == "9939"
+    assert CabeceraLote.model_validate({"lote": "Las Lilas", "latitud": None}).lote == "Las Lilas"
+
+
 def test_como_cabecera_descarta_datos_de_hibrido():
     ficha = RecorridaCampo(lote="Las Lilas", estadio_fenologico="V2", hibrido_variedad="9939", stand_valor=3.5)
     cabecera = ficha.como_cabecera()

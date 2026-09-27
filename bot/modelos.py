@@ -144,8 +144,6 @@ class CabeceraLote(BaseModel):
     cultivo: str | None = None
     ensayo: str | None = None
     estadio_fenologico: str | None = None
-    latitud: float | None = None
-    longitud: float | None = None
 
     CAMPOS_CLAVE_CABECERA: ClassVar[tuple[str, ...]] = ("localidad", "lote", "cultivo", "ensayo")
 

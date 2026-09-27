@@ -269,7 +269,7 @@ class _Paso4(BaseModel):
 
 
 _PASOS = {
-    1: (_Paso1, INSTRUCCION_PASO_1, ("latitud", "longitud", "cliente", "cliente_id")),
+    1: (_Paso1, INSTRUCCION_PASO_1, ("cliente", "cliente_id")),
     2: (_Paso2, INSTRUCCION_PASO_2, ()),
     3: (_Paso3, INSTRUCCION_PASO_3, ()),
     4: (_Paso4, INSTRUCCION_PASO_4, ()),
@@ -473,7 +473,8 @@ def _detalle_util(detalle: str | None) -> str | None:
 def _relevamiento_de(hallazgo: _Hallazgo) -> Relevamiento:
     detalle = _detalle_util(hallazgo.detalle)
     if hallazgo.tipo == "maleza":
-        item = Maleza(nombre=hallazgo.nombre, porcentaje_cobertura=hallazgo.porcentaje, tamano=detalle)
+        # el tamaño ya viene revisado por `_tamano_de_maleza` ("10 cm" sale de lo dicho)
+        item = Maleza(nombre=hallazgo.nombre, porcentaje_cobertura=hallazgo.porcentaje, tamano=hallazgo.detalle)
         return Relevamiento(malezas=[item])
     if hallazgo.tipo == "plaga":
         por_metro, porcentaje = hallazgo.por_metro, hallazgo.porcentaje
@@ -880,11 +881,45 @@ def _repartidor(audio: RecorridaAudio, conocidos: list[str]):
     return destino
 
 
-def _audio_desde_paso_2(paso2: _Paso2, transcripcion: str, conocidos: list[str] | None = None) -> RecorridaAudio:
+_TAMANO_EN_CM = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:cm|cent[ií]metros?)\b", re.IGNORECASE)
+
+
+def _tamano_de_maleza(hallazgo: _Hallazgo, transcripcion: str) -> str | None:
+    """El tamaño de una maleza: "10 cm" si en su frase se dice "de unos 10 centímetros" (el modelo
+    lo suele poner como % de cobertura); si no, el detalle del modelo, salvo que traiga números
+    (no se dijeron) o repita el nombre ("bastante rama negra")."""
+    propias = [f for f in _frases(transcripcion) if _nombre_esta_en_el_texto(hallazgo.nombre, f)]
+    tamano = next((m for f in propias if (m := _TAMANO_EN_CM.search(f))), None)
+    if tamano:
+        return f"{tamano.group(1)} cm"
+    detalle = _detalle_util(hallazgo.detalle)
+    if detalle and normalizar_texto(hallazgo.nombre) in normalizar_texto(detalle):
+        return None
+    return detalle
+
+
+def _adversidades_nombradas(transcripcion: str, vocabulario: list[catalogo_mod.EntradaCatalogo]) -> list[str]:
+    """Las malezas, plagas y enfermedades del vocabulario que se nombran en el texto."""
+    return [
+        nombre
+        for entrada in vocabulario if entrada.tipo in ("maleza", "plaga", "enfermedad")
+        for nombre in [entrada.nombre, *entrada.sinonimos]
+        if len(normalizar_texto(nombre)) >= 4 and _nombre_esta_en_el_texto(nombre, transcripcion)
+    ]
+
+
+def _audio_desde_paso_2(
+    paso2: _Paso2,
+    transcripcion: str,
+    conocidos: list[str] | None = None,
+    vocabulario: list[catalogo_mod.EntradaCatalogo] | None = None,
+) -> RecorridaAudio:
     """Lo del paso 2 como un RecorridaAudio para sumarlo con `combinar`. Lo que se
     atribuye a un híbrido va a ese híbrido; lo que no, queda como dato general."""
     audio = RecorridaAudio()
     destino = _repartidor(audio, conocidos or [])
+    vocabulario = vocabulario or []
+    del_vocabulario = _adversidades_nombradas(transcripcion, vocabulario)
 
     for hallazgo in paso2.hallazgos:
         # a veces el modelo cruza los campos y pone el híbrido como nombre de la maleza/plaga
@@ -895,8 +930,21 @@ def _audio_desde_paso_2(paso2: _Paso2, transcripcion: str, conocidos: list[str] 
         if not _nombre_esta_en_el_texto(hallazgo.nombre, transcripcion):
             logger.warning("Descarto «%s»: el modelo lo mencionó pero no está en el audio", hallazgo.nombre)
             continue
-        otros_nombres = [h.nombre for h in paso2.hallazgos if normalizar_texto(h.nombre) != normalizar_texto(hallazgo.nombre)]
+        # el modelo pone plagas como malezas ("cogollero"): manda lo que dice el vocabulario
+        tipo_real = catalogo_mod.tipo_de_adversidad(hallazgo.nombre, vocabulario)
+        if tipo_real and tipo_real != hallazgo.tipo:
+            logger.warning("«%s» es %s, no %s: lo corrijo", hallazgo.nombre, tipo_real, hallazgo.tipo)
+            hallazgo = hallazgo.model_copy(update={"tipo": tipo_real})
+        # también los nombres del vocabulario que el modelo no listó: la frase de otro hallazgo no
+        # sirve para confirmar los números de este ("rama negra de 10 cm. Mancha marrón al 10%")
+        otros_nombres = [
+            n for n in [*(h.nombre for h in paso2.hallazgos), *del_vocabulario]
+            if normalizar_texto(n) != normalizar_texto(hallazgo.nombre)
+            and not _nombre_esta_en_el_texto(n, hallazgo.nombre)
+        ]
         hallazgo = _sin_numeros_inventados(hallazgo, transcripcion, otros_nombres)
+        if hallazgo.tipo == "maleza":
+            hallazgo = hallazgo.model_copy(update={"detalle": _tamano_de_maleza(hallazgo, transcripcion)})
         de_hibrido = _nombre_detectado(hallazgo.hibrido, conocidos or []) if hallazgo.hibrido else None
         if de_hibrido and not _hallazgo_es_de_hibrido(transcripcion, hallazgo.nombre, de_hibrido):
             de_hibrido = None
@@ -1196,9 +1244,22 @@ def _texto_util(texto: str | None) -> str | None:
     return texto.strip() or None
 
 
-def _audio_desde_paso_3(paso3: _Paso3) -> RecorridaAudio:
+_UMBRAL_DICHO = re.compile(r"umbral|dano economico")
+
+
+def _audio_desde_paso_3(paso3: _Paso3, transcripcion: str | None = None) -> RecorridaAudio:
+    """El umbral solo vale si el técnico habla del umbral: el modelo pone "no_superado" aunque
+    nadie lo diga (el paso 3 corre también por "aplicar" o "recomiendo")."""
+    umbral = paso3.umbral_dano_economico
+    if (
+        transcripcion is not None
+        and umbral != UmbralDanoEconomico.NO_EVALUADO
+        and not _UMBRAL_DICHO.search(_sin_tildes_y_minusculas(transcripcion))
+    ):
+        logger.warning("Descarto el umbral «%s»: no se habló del umbral", umbral.value)
+        umbral = UmbralDanoEconomico.NO_EVALUADO
     return RecorridaAudio(
-        umbral_dano_economico=paso3.umbral_dano_economico,
+        umbral_dano_economico=umbral,
         acciones=_texto_util(paso3.acciones),
         comentarios=_texto_util(paso3.comentarios),
     )
@@ -1229,12 +1290,12 @@ async def extraer_recorrida(
     if menciona_relevamientos(transcripcion, vocabulario):
         nombres = [h.hibrido_variedad for h in audio.hibridos if h.hibrido_variedad]
         paso2 = await _pedir(config, 2, _prompt_paso_2(transcripcion, nombres))
-        extra = _audio_desde_paso_2(paso2, transcripcion, nombres)
+        extra = _audio_desde_paso_2(paso2, transcripcion, nombres, vocabulario)
         catalogo_mod.unificar_nombres(extra, vocabulario)
         audio.combinar(extra)
 
     if menciona_observaciones(transcripcion):
-        audio.combinar(_audio_desde_paso_3(await _pedir(config, 3, _prompt_paso_3(transcripcion))))
+        audio.combinar(_audio_desde_paso_3(await _pedir(config, 3, _prompt_paso_3(transcripcion)), transcripcion))
 
     if menciona_aplicaciones(transcripcion, vocabulario):
         nombres = [h.hibrido_variedad for h in audio.hibridos if h.hibrido_variedad]

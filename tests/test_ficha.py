@@ -62,7 +62,7 @@ def test_hibrido_muestra_malezas_plagas_enfermedades():
     assert "tamaño: grande" in texto
     assert "cobertura: 30" in texto
     assert "isoca" in texto
-    assert "4.5/m lineal" in texto
+    assert "4.5 individuos por metro lineal" in texto
     assert "roya" in texto
     assert "severidad: media" in texto
 

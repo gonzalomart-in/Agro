@@ -218,6 +218,19 @@ def unificar_nombres(audio: RecorridaAudio, entradas: list[EntradaCatalogo]) -> 
         unificar_relevamiento(h)
 
 
+def tipo_de_adversidad(nombre: str, entradas: list[EntradaCatalogo]) -> str | None:
+    """"maleza", "plaga" o "enfermedad" según el vocabulario ("cogollero" -> "plaga"). None si no
+    está, o si el mismo nombre aparece en más de un tipo."""
+    clave = normalizar_texto(nombre)
+    tipos = {tipo for tipo in ("maleza", "plaga", "enfermedad") if clave in _indice(entradas, tipo)}
+    if not tipos:
+        tipos = {
+            tipo for tipo in ("maleza", "plaga", "enfermedad")
+            if get_close_matches(clave, list(_indice(entradas, tipo)), n=1, cutoff=0.85)
+        }
+    return tipos.pop() if len(tipos) == 1 else None
+
+
 def nombre_de_adversidad(nombre: str, entradas: list[EntradaCatalogo]) -> str:
     """El nombre oficial de una maleza, plaga o enfermedad ("conyza" -> "rama negra"), para lo que
     se quiere controlar con un producto. Si no está en el vocabulario, queda como está."""

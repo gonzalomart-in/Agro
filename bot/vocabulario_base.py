@@ -85,7 +85,7 @@ VOCABULARIO_BASE: list[EntradaCatalogo] = [
     # ---- plagas ----
     _e("plaga", "oruga cortadora", "isoca cortadora", "agrotis", "gusano cortador"),
     _e("plaga", "isoca medidora", "oruga medidora", "rachiplusia"),
-    _e("plaga", "oruga bolillera", "helicoverpa", "isoca bolillera"),
+    _e("plaga", "oruga bolillera", "helicoverpa", "isoca bolillera", "bolillera"),
     _e("plaga", "cogollero", "oruga cogollera", "spodoptera", "oruga militar tardía"),
     _e("plaga", "chinche verde", "nezara"),
     _e("plaga", "chinche de los cuernos", "dichelops", "chinche de cuernos"),
