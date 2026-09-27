@@ -83,14 +83,21 @@ def _motor() -> tuple[asyncio.AbstractEventLoop, BaseDeDatos]:
 
 def correr(pedido):
     """Ejecuta `pedido(db)` (una función que devuelve una corrutina) y espera el resultado.
-    Reintenta una vez si se cortó la conexión (Neon apaga la base cuando no se usa)."""
+    Reintenta una vez si se cortó la conexión: Neon apaga la base cuando no se usa y corta las
+    conexiones abiertas ("terminating connection due to administrator command")."""
     loop, db = _motor()
     for intento in range(2):
         try:
             return asyncio.run_coroutine_threadsafe(pedido(db), loop).result(timeout=60)
-        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, ConnectionError):
+        except (
+            asyncpg.PostgresConnectionError,
+            asyncpg.exceptions.OperatorInterventionError,
+            asyncpg.InterfaceError,
+            ConnectionError,
+        ):
             if intento:
                 raise
+            logging.getLogger("panel").warning("Se cortó la conexión con la base; reintento")
 
 
 @st.cache_data(ttl=300, show_spinner=False)

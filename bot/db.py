@@ -141,8 +141,12 @@ class BaseDeDatos:
 
     @classmethod
     async def conectar_a(cls, database_url: str, admin_user_ids: list[int] | None = None) -> "BaseDeDatos":
-        """Como `conectar`, pero sin la configuración del bot (la usa el panel web)."""
-        pool = await asyncpg.create_pool(database_url)
+        """Como `conectar`, pero sin la configuración del bot (la usa el panel web).
+
+        Neon apaga la base a los 5 minutos sin uso y corta las conexiones abiertas: las que quedan
+        sin usar se cierran al minuto, así nunca se usa una conexión ya cortada (la próxima consulta
+        abre una nueva y despierta la base)."""
+        pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5, max_inactive_connection_lifetime=60)
         instancia = cls(pool)
         await instancia._migrar()
         await instancia._sembrar_admins(admin_user_ids or [])

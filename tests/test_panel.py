@@ -157,6 +157,25 @@ def test_cargar_vocabulario_y_confirmar_un_parecido(base):
     assert ("agregar_sinonimos", "hibrido", "ST9939VIP3", ["9939"]) in base.llamadas
 
 
+def test_si_neon_corto_la_conexion_dormida_reintenta_y_carga(base):
+    import asyncpg
+
+    original = base.usuario_de_acceso_panel
+    cortes = []
+
+    async def cortada_la_primera_vez(token_hash):
+        if not cortes:
+            cortes.append(1)
+            raise asyncpg.exceptions.AdminShutdownError("terminating connection due to administrator command")
+        return await original(token_hash)
+
+    base.usuario_de_acceso_panel = cortada_la_primera_vez
+    at = _abrir("token-admin")
+    assert cortes == [1]
+    assert at.metric[0].value == "2"
+    assert "problema con la base de datos" not in _textos(at)
+
+
 def test_si_la_base_no_responde_muestra_un_aviso_en_castellano():
     async def conectar_a(database_url, admin_user_ids=None):
         raise ConnectionRefusedError("sin base")
