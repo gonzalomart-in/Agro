@@ -1,12 +1,14 @@
 """Extracción de datos estructurados desde una transcripción, usando Ollama.
 
-Se hace en hasta tres pasos, porque un modelo chico se confunde si tiene que
+Se hace en hasta cuatro pasos, porque un modelo chico se confunde si tiene que
 llenar todo de una vez y además tarda mucho en escribir campos vacíos:
 
 1. Datos del lote y de cada híbrido (híbrido, stand, estado). Siempre.
 2. Malezas, plagas y enfermedades (y los "no hay"). Solo si el audio parece
    hablar de eso.
 3. Umbral de daño, acciones y comentarios. Solo si el audio los menciona.
+4. Productos a aplicar (o ya aplicados) con su dosis. Solo si el audio nombra
+   algún producto o habla de aplicar.
 """
 from __future__ import annotations
 
@@ -21,10 +23,13 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from . import catalogo as catalogo_mod
+from . import productos as productos_mod
 from .config import Config
 from .modelos import (
+    Aplicacion,
     CabeceraLote,
     Enfermedad,
+    EstadoAplicacion,
     Hibrido,
     Lote,
     Maleza,
@@ -34,6 +39,7 @@ from .modelos import (
     UmbralDanoEconomico,
     UnidadStand,
     _clave_lote,
+    fusionar_aplicaciones,
     normalizar_texto,
 )
 
@@ -134,6 +140,32 @@ Extraé únicamente lo que el técnico dice de forma explícita sobre:
 Si no dice nada de eso, devolvé un JSON vacío: {}. No completes nada por su cuenta.
 """
 
+# Sin ejemplo a propósito, como el paso 2: el modelo copiaría el producto y la dosis del ejemplo.
+INSTRUCCION_PASO_4 = """\
+
+PASO 4: PRODUCTOS A APLICAR O YA APLICADOS.
+Te paso los híbridos ya detectados. Listá cada producto fitosanitario \
+(herbicida, insecticida, fungicida, coadyuvante...) que el técnico recomienda \
+aplicar o dice que ya se aplicó.
+- "aplicaciones": un item por producto. "producto" es el nombre comercial o el \
+principio activo, tal como lo dice el técnico. Cada producto va en un item \
+aparte, aunque se nombren juntos en la misma frase. Incluí también los \
+productos que ya se aplicaron.
+- "dosis" es la cantidad por hectárea y "unidad" su unidad: l/ha, cc/ha, g/ha o \
+kg/ha. Solo si el técnico dice el número.
+- "objetivo": la maleza, plaga o enfermedad que se quiere controlar, si la dice.
+- "momento": solamente cuándo aplicar o cuándo se aplicó, si lo dice. No pongas \
+ahí dosis, litros ni caldo.
+- "coadyuvante": el aceite, surfactante u otro coadyuvante que se agrega al \
+producto, con su dosis si la dice.
+- "volumen_caldo": litros de caldo (agua) por hectárea, si lo dice.
+- "ya_aplicado": true solo si dice que el producto ya se aplicó. Si es una \
+recomendación, omitilo.
+- "hibrido": el híbrido al que se refiere (usá el nombre exacto de la lista); \
+omitilo si es para todo el lote.
+- Si no menciona ningún producto, devolvé {}.
+"""
+
 # Si el audio no menciona nada de esto, se saltea el paso 2 (la mayoría de los audios de stand).
 _PATRON_RELEVAMIENTOS = re.compile(
     r"maleza|plaga|enfermedad|sintoma|cobertura|incidencia|severidad|oruga|isoca|chinche|"
@@ -142,6 +174,12 @@ _PATRON_RELEVAMIENTOS = re.compile(
 )
 # Y el paso 3 solo corre si aparece alguna de estas palabras.
 _PATRON_OBSERVACIONES = re.compile(r"umbral|accion|aplic|recomend|comentario|observ|control|conviene|hay que")
+# El paso 4 corre si aparece alguna de estas palabras o se nombra un producto (ver `menciona_aplicaciones`).
+_PATRON_APLICACIONES = re.compile(
+    r"aplic|pulveriz|fumig|dosis|herbicida|insecticida|fungicida|coadyuvante|curasemilla|caldo|"
+    r"\bl/ha\b|\bcc\b|centimetros? cubicos|litros? (?:por|a la|la|/) ?(?:ha|hectarea)|"
+    r"(?:gramos?|kilos?|litros?) por hectarea"
+)
 
 # Las respuestas de relleno de un modelo chico ("no hay acciones", "sin comentarios") no son datos.
 _PATRON_RELLENO = re.compile(r"^(no hay|no se|no|sin|ninguna?|nada|no corresponde)\b")
@@ -190,10 +228,27 @@ class _Paso3(BaseModel):
     comentarios: str | None = None
 
 
+class _AplicacionExtraida(BaseModel):
+    producto: str
+    dosis: float | None = None
+    unidad: str | None = None
+    objetivo: str | None = None
+    momento: str | None = None
+    coadyuvante: str | None = None
+    volumen_caldo: float | None = None
+    ya_aplicado: bool = False
+    hibrido: str | None = None
+
+
+class _Paso4(BaseModel):
+    aplicaciones: list[_AplicacionExtraida] = Field(default_factory=list)
+
+
 _PASOS = {
     1: (_Paso1, INSTRUCCION_PASO_1, ("latitud", "longitud")),
     2: (_Paso2, INSTRUCCION_PASO_2, ()),
     3: (_Paso3, INSTRUCCION_PASO_3, ()),
+    4: (_Paso4, INSTRUCCION_PASO_4, ()),
 }
 
 _CLAVES_QUE_SOBRAN_EN_EL_ESQUEMA = ("title", "default", "description")
@@ -250,6 +305,13 @@ def menciona_observaciones(transcripcion: str) -> bool:
     return bool(_PATRON_OBSERVACIONES.search(_sin_tildes_y_minusculas(transcripcion)))
 
 
+def menciona_aplicaciones(transcripcion: str, vocabulario: list[catalogo_mod.EntradaCatalogo]) -> bool:
+    """True si el audio habla de aplicar algo o nombra un producto fitosanitario."""
+    if _PATRON_APLICACIONES.search(_sin_tildes_y_minusculas(transcripcion)):
+        return True
+    return productos_mod.nombra_algun_producto(transcripcion, vocabulario)
+
+
 def _vocabulario_para_paso_1(vocabulario: list[catalogo_mod.EntradaCatalogo]) -> str:
     return catalogo_mod.formatear_para_prompt(
         [e for e in vocabulario if e.tipo in ("hibrido", "ensayo", "nota")]
@@ -289,6 +351,12 @@ def _prompt_paso_2(transcripcion: str, hibridos: list[str]) -> str:
 
 def _prompt_paso_3(transcripcion: str) -> str:
     return f"Transcripción del audio del técnico:\n{transcripcion}"
+
+
+def _prompt_paso_4(transcripcion: str, hibridos: list[str]) -> str:
+    """Sin la lista de productos a propósito (son miles, y un modelo chico copiaría nombres de ahí):
+    los nombres se buscan en el registro de SENASA después (`productos.identificar`)."""
+    return _prompt_paso_2(transcripcion, hibridos)
 
 
 def _keep_alive(valor: str) -> str | int:
@@ -727,21 +795,29 @@ def _nombre_detectado(nombre: str, conocidos: list[str]) -> str:
     return parecidos[0] if len(parecidos) == 1 else nombre
 
 
-def _audio_desde_paso_2(paso2: _Paso2, transcripcion: str, conocidos: list[str] | None = None) -> RecorridaAudio:
-    """Lo del paso 2 como un RecorridaAudio para sumarlo con `combinar`. Lo que se
-    atribuye a un híbrido va a ese híbrido; lo que no, queda como dato general."""
-    audio = RecorridaAudio()
+def _repartidor(audio: RecorridaAudio, conocidos: list[str]):
+    """Devuelve `destino(nombre_hibrido)`: dónde va un dato de ese híbrido dentro de `audio` (el
+    híbrido, que se agrega la primera vez) o, si no es de ningún híbrido, el propio `audio`."""
     por_hibrido: dict[str, Hibrido] = {}
 
-    def destino(nombre_hibrido: str | None) -> Relevamiento:
+    def destino(nombre_hibrido: str | None) -> RecorridaAudio | Hibrido:
         if not nombre_hibrido:
             return audio
-        nombre_hibrido = _nombre_detectado(nombre_hibrido, conocidos or [])
+        nombre_hibrido = _nombre_detectado(nombre_hibrido, conocidos)
         clave = normalizar_texto(nombre_hibrido)
         if clave not in por_hibrido:
             por_hibrido[clave] = Hibrido(hibrido_variedad=nombre_hibrido)
             audio.hibridos.append(por_hibrido[clave])
         return por_hibrido[clave]
+
+    return destino
+
+
+def _audio_desde_paso_2(paso2: _Paso2, transcripcion: str, conocidos: list[str] | None = None) -> RecorridaAudio:
+    """Lo del paso 2 como un RecorridaAudio para sumarlo con `combinar`. Lo que se
+    atribuye a un híbrido va a ese híbrido; lo que no, queda como dato general."""
+    audio = RecorridaAudio()
+    destino = _repartidor(audio, conocidos or [])
 
     for hallazgo in paso2.hallazgos:
         # a veces el modelo cruza los campos y pone el híbrido como nombre de la maleza/plaga
@@ -770,6 +846,280 @@ def _audio_desde_paso_2(paso2: _Paso2, transcripcion: str, conocidos: list[str] 
             continue
         relevamiento.fusionar_relevamientos(Relevamiento(**{_SIN_DE[ausencia.tipo]: True}))
     return audio
+
+
+# ---- paso 4: productos y dosis ----
+
+_NUMEROS_DE_DOSIS = {
+    **_NUMEROS_EN_PALABRAS, "un": 1, "una": 1, "uno": 1, "once": 11, "doce": 12, "veinticinco": 25,
+    "ciento": 100, "doscientos": 200, "doscientas": 200, "trescientos": 300, "trescientas": 300,
+    "cuatrocientos": 400, "cuatrocientas": 400, "quinientos": 500, "quinientas": 500,
+    "seiscientos": 600, "seiscientas": 600, "setecientos": 700, "setecientas": 700,
+    "ochocientos": 800, "ochocientas": 800, "novecientos": 900, "novecientas": 900, "mil": 1000,
+}
+_MEDIO = ("medio", "media")
+# "un" y "medio" solo cuentan como cantidad pegados a una unidad ("un litro", "medio litro"):
+# sueltos son muy comunes ("aplicar un herbicida")
+_SOLO_CON_UNIDAD = {"un", "una", "uno", *_MEDIO}
+_UNIDADES_DE_DOSIS = (
+    ("cc/ha", r"cc|cm3|cms?|centimetros?|mililitros?|ml"),
+    ("kg/ha", r"kilos?|kilogramos?|kgs?"),
+    ("l/ha", r"litros?|lts?|l"),
+    ("g/ha", r"gramos?|grs?|g"),
+)
+_TOKEN_DE_CANTIDAD = re.compile(r"\d+(?:[.,]\d+)?|[a-z0-9]+(?:/ha)?")
+_CONTEXTO_CALDO = re.compile(r"caldo|volumen|agua|mojado")
+_VOLUMEN_DE_CALDO = re.compile(r"[\w,.]+\s+(?:litros?|lts?|l)\s+de\s+(?:caldo|agua)", re.IGNORECASE)
+# un "momento" que en realidad es la dosis o el caldo ("80 litros de caldo")
+_NO_ES_MOMENTO = re.compile(r"litro|caldo|\bcc\b|gramo|kilo|l/ha|dosis|%")
+# lo que dice que se habla de aplicar (antes de nombrar el producto) o una dosis (después)
+_CONTEXTO_APLICACION = re.compile(
+    r"aplic|pulveriz|fumig|recomiend|recomendamos|conviene|hay que|habria que|usar|usamos|tratar|entrar con|"
+    r"pasar|pasamos|dosis|litro|\bcc\b|gramo|kilo|l/ha"
+)
+_NO_APLICAR = re.compile(r"\bno\b|\bni\b|sin necesidad|resistente|tolerante")
+_MOMENTO_DICHO = re.compile(
+    r"hace \w+ (?:d[ií]as?|semanas?)|antes de (?:la )?(?:siembra|[VR]\s?\d+)|en (?:pre|post)[\s-]?(?:siembra|emergencia)|"
+    r"en barbecho|la semana pasada",
+    re.IGNORECASE,
+)
+_YA_APLICADO = re.compile(
+    r"\b(?:se (?:le |les )?(?:aplico|aplicaron|hizo|paso|pasaron|pulverizo|fumigo|dio)|"
+    r"aplicamos|aplicaron|aplique|pulverizamos|pulverizaron|fumigamos|fumigaron|pasamos|pasaron|"
+    r"ya (?:se |le |les )?(?:aplic|pas|hizo|hicieron|pulveriz|fumig)\w*|fue(?:ron)? aplicad\w*|"
+    r"esta aplicad\w*|hace \w+ dias?)\b"
+)
+
+
+def _unidad_de_token(token: str) -> str | None:
+    for codigo, patron in _UNIDADES_DE_DOSIS:
+        if re.fullmatch(rf"(?:{patron})(?:/ha)?", token):
+            return codigo
+    return None
+
+
+def _unidad_normalizada(unidad: str | None) -> str | None:
+    """'litros por hectárea' -> 'l/ha', 'CC' -> 'cc/ha'. None si no es una unidad conocida."""
+    primera = _TOKEN_DE_CANTIDAD.search(_sin_tildes_y_minusculas(unidad or ""))
+    return _unidad_de_token(primera.group()) if primera else None
+
+
+def _cantidades_con_unidad(frase: str) -> list[tuple[float, str | None]]:
+    """Las cantidades que se dicen en `frase`, con la unidad que les sigue (si la hay):
+    "2 litros y medio" -> (2.5, "l/ha"), "medio litro" -> (0.5, "l/ha"), "500 cc" -> (500, "cc/ha"),
+    "doscientos cincuenta gramos" -> (250, "g/ha")."""
+    tokens = _TOKEN_DE_CANTIDAD.findall(_sin_tildes_y_minusculas(frase))
+    cantidades = []
+    for i, token in enumerate(tokens):
+        if token in _MEDIO:
+            valor = 0.5
+        elif re.fullmatch(r"\d+(?:[.,]\d+)?", token):
+            valor = float(token.replace(",", "."))
+        elif token in _NUMEROS_DE_DOSIS and not (i and tokens[i - 1] in _NUMEROS_DE_DOSIS):
+            valor = _NUMEROS_DE_DOSIS[token]
+        else:
+            continue
+        j = i + 1
+        if token not in _SOLO_CON_UNIDAD and not token[0].isdigit():
+            # "doscientos cincuenta" = 250, "mil quinientos" = 1500, "dos mil" = 2000
+            while j < len(tokens) and tokens[j] in _NUMEROS_DE_DOSIS and tokens[j] not in _SOLO_CON_UNIDAD:
+                siguiente = _NUMEROS_DE_DOSIS[tokens[j]]
+                valor = valor * siguiente if siguiente > valor else valor + siguiente
+                j += 1
+        if tokens[j:j + 1] == ["y"] and tokens[j + 1:j + 2] and tokens[j + 1] in _MEDIO:
+            valor, j = valor + 0.5, j + 2
+        k = j + 1 if tokens[j:j + 1] == ["de"] else j
+        unidad = _unidad_de_token(tokens[k]) if k < len(tokens) else None
+        if unidad and tokens[k + 1:k + 2] == ["y"] and tokens[k + 2:k + 3] and tokens[k + 2] in _MEDIO:
+            valor += 0.5  # "un litro y medio"
+        if unidad or token not in _SOLO_CON_UNIDAD:
+            cantidades.append((valor, unidad))
+    return cantidades
+
+
+def _dosis_dicha(valor: float, frases: list[str]) -> tuple[float, str | None] | None:
+    """La dosis tal como se dijo en `frases` (cantidad y unidad), o None si no se dijo.
+    Si el modelo pasó "500 cc" a 0,5 litros, vale lo que dijo el técnico."""
+    candidatas = [c for frase in frases for c in _cantidades_con_unidad(frase)]
+    for cantidad, unidad in candidatas:
+        if abs(cantidad - valor) < 0.01:
+            return cantidad, unidad
+    for cantidad, unidad in candidatas:
+        if unidad and (abs(cantidad - valor * 1000) < 0.5 or abs(cantidad * 1000 - valor) < 0.5):
+            return cantidad, unidad
+    return None
+
+
+def _producto_dicho(nombre: str, texto: str) -> bool:
+    return _nombre_esta_en_el_texto(nombre, texto) or _se_dijo(nombre, texto)
+
+
+def _frases_del_producto(
+    transcripcion: str, producto: str, otros_productos: list[str], con_anterior: bool = False
+) -> list[str]:
+    """Las frases donde se nombra el producto, más la siguiente de cada una ("glifosato, a 2 litros
+    por hectárea"), salvo que esa siguiente ya nombre otro producto. Con `con_anterior`, también la
+    frase de antes ("hay cogollero, conviene aplicar Coragen")."""
+    frases = _frases(transcripcion)
+    elegidas: list[str] = []
+    for i, frase in enumerate(frases):
+        if not _producto_dicho(producto, frase):
+            continue
+        if con_anterior and i > 0 and frases[i - 1] not in elegidas:
+            elegidas.append(frases[i - 1])
+        elegidas.append(frase)
+        if i + 1 < len(frases) and not any(_producto_dicho(o, frases[i + 1]) for o in otros_productos):
+            elegidas.append(frases[i + 1])
+    return elegidas
+
+
+def _producto_es_de_hibrido(transcripcion: str, producto: str, hibrido: str) -> bool:
+    """El producto es de un híbrido puntual si ese híbrido se nombra en la misma oración ("En el 9939
+    hay cogollero, conviene aplicar Coragen") o en la frase anterior con un "ese"."""
+    clave = normalizar_texto(hibrido)
+    for oracion in _ORACIONES.split(transcripcion):
+        if clave and clave in normalizar_texto(oracion) and _producto_dicho(producto, oracion):
+            return True
+    return _hallazgo_es_de_hibrido(transcripcion, producto, hibrido)
+
+
+def _aplicacion_de(
+    extraida: _AplicacionExtraida,
+    transcripcion: str,
+    otros_productos: list[str],
+    vocabulario: list[catalogo_mod.EntradaCatalogo],
+) -> Aplicacion:
+    """La aplicación que dijo el técnico, sin lo que el modelo agregó por su cuenta: la dosis y el
+    volumen de caldo solo quedan si se dicen esos números, y los textos si se dicen sus palabras
+    cerca del producto (no en la frase de otro producto)."""
+    frases = _frases_del_producto(transcripcion, extraida.producto, otros_productos)
+    cerca = " ".join(frases)
+    dosis = unidad = None
+    if extraida.dosis is not None:
+        dicha = _dosis_dicha(extraida.dosis, frases)
+        if dicha is None:
+            logger.warning("Descarto la dosis %s de «%s»: no se dijo", extraida.dosis, extraida.producto)
+        else:
+            dosis, unidad = dicha[0], dicha[1] or _unidad_normalizada(extraida.unidad)
+    volumen = extraida.volumen_caldo or None  # el modelo a veces escribe 0 en vez de omitirlo
+    if volumen is not None and not _numero_dicho(volumen, _frases(transcripcion), _CONTEXTO_CALDO):
+        logger.warning("Descarto el volumen de caldo %s: no se dijo", volumen)
+        volumen = None
+    textos = {}
+    for campo in ("objetivo", "momento", "coadyuvante"):
+        valor = (getattr(extraida, campo) or "").strip()
+        if campo == "objetivo":
+            con_anterior = " ".join(_frases_del_producto(transcripcion, extraida.producto, otros_productos, True))
+            dicho = _nombre_esta_en_el_texto(valor, con_anterior)
+        else:
+            dicho = _palabras_dichas(valor, cerca)
+        if campo == "momento" and _NO_ES_MOMENTO.search(_sin_tildes_y_minusculas(valor)):
+            dicho = False
+        if valor and not dicho:
+            logger.warning("Descarto %s «%s» de «%s»: no se dijo", campo, valor, extraida.producto)
+        textos[campo] = valor if valor and dicho else None
+    if textos["objetivo"]:
+        textos["objetivo"] = catalogo_mod.nombre_de_adversidad(textos["objetivo"], vocabulario)
+    ya_aplicado = extraida.ya_aplicado and bool(_YA_APLICADO.search(_sin_tildes_y_minusculas(" ".join(frases))))
+    identificado = productos_mod.identificar(extraida.producto, vocabulario)
+    return Aplicacion(
+        producto=identificado.producto,
+        principio_activo=identificado.principio_activo,
+        dosis=dosis,
+        unidad=unidad,
+        volumen_caldo=volumen,
+        estado=EstadoAplicacion.REALIZADA if ya_aplicado else EstadoAplicacion.RECOMENDADA,
+        **textos,
+    )
+
+
+def _audio_desde_paso_4(
+    paso4: _Paso4,
+    transcripcion: str,
+    conocidos: list[str] | None = None,
+    vocabulario: list[catalogo_mod.EntradaCatalogo] | None = None,
+) -> RecorridaAudio:
+    """Lo del paso 4 como un RecorridaAudio para sumarlo con `combinar`: cada producto va al
+    híbrido que se nombra con él o, si no, a todo el lote."""
+    audio = RecorridaAudio()
+    destino = _repartidor(audio, conocidos or [])
+    nombres = [a.producto for a in paso4.aplicaciones]
+    dadas: list[Aplicacion] = []
+    for extraida in paso4.aplicaciones:
+        if not extraida.producto.strip() or not _producto_dicho(extraida.producto, transcripcion):
+            logger.warning("Descarto el producto «%s»: el modelo lo mencionó pero no está en el audio", extraida.producto)
+            continue
+        otros = [n for n in nombres if normalizar_texto(n) != normalizar_texto(extraida.producto)]
+        aplicacion = _aplicacion_de(extraida, transcripcion, otros, vocabulario or [])
+        de_hibrido = _nombre_detectado(extraida.hibrido, conocidos or []) if extraida.hibrido else None
+        if de_hibrido and not _producto_es_de_hibrido(transcripcion, extraida.producto, de_hibrido):
+            de_hibrido = None
+        fusionar_aplicaciones(destino(de_hibrido).aplicaciones, [aplicacion])
+        dadas.append(aplicacion)
+    for de_hibrido, aplicacion in _aplicaciones_que_el_modelo_omitio(transcripcion, dadas, conocidos or [], vocabulario or []):
+        logger.warning("Agrego «%s»: se nombra para aplicar y el modelo no lo listó", aplicacion.producto)
+        fusionar_aplicaciones(destino(de_hibrido).aplicaciones, [aplicacion])
+    return audio
+
+
+def _limites_de_oraciones(texto: str) -> list[tuple[int, int]]:
+    """(inicio, fin) de cada oración de `texto` (cortando en puntos que no son decimales)."""
+    limites, inicio = [], 0
+    for corte in _ORACIONES.finditer(texto):
+        limites.append((inicio, corte.start()))
+        inicio = corte.end()
+    limites.append((inicio, len(texto)))
+    return limites
+
+
+def _aplicaciones_que_el_modelo_omitio(
+    transcripcion: str,
+    dadas: list[Aplicacion],
+    conocidos: list[str],
+    vocabulario: list[catalogo_mod.EntradaCatalogo],
+) -> list[tuple[str | None, Aplicacion]]:
+    """Un modelo chico lista un solo producto aunque se nombren varios ("glifosato 2 litros más
+    2,4 D medio litro"). Cada principio activo que se nombra para aplicar (con una palabra como
+    "aplicar" antes, o con una dosis después) y el modelo no listó se agrega con lo que se dijo
+    en su tramo: desde el producto anterior hasta el siguiente, dentro de la misma oración.
+
+    Devuelve (híbrido, aplicación): el híbrido, si en la oración se nombra uno solo."""
+    cubiertos = {normalizar_texto(t) for a in dadas for t in (a.producto, a.principio_activo) if t}
+    coadyuvantes = " ".join(normalizar_texto(a.coadyuvante) for a in dadas if a.coadyuvante)
+    menciones = productos_mod.productos_nombrados(transcripcion, vocabulario)
+    oraciones = _limites_de_oraciones(transcripcion)
+    agregadas = []
+    for k, mencion in enumerate(menciones):
+        identificado = mencion.identificacion
+        claves = {normalizar_texto(t) for t in (identificado.producto, identificado.principio_activo) if t}
+        if claves & cubiertos or (coadyuvantes and normalizar_texto(mencion.texto) in coadyuvantes):
+            continue
+        inicio_oracion, fin_oracion = next((a, b) for a, b in oraciones if a <= mencion.inicio <= b)
+        desde = max([inicio_oracion, *(m.fin for m in menciones[:k] if inicio_oracion <= m.fin <= mencion.inicio)])
+        hasta = min([fin_oracion, *(m.inicio for m in menciones[k + 1:] if m.inicio <= fin_oracion)])
+        antes = transcripcion[desde:mencion.inicio]
+        despues = _VOLUMEN_DE_CALDO.sub(" ", transcripcion[mencion.fin:hasta])
+        cantidades = [c for c in _cantidades_con_unidad(despues) if c[1]]
+        if not (_CONTEXTO_APLICACION.search(_sin_tildes_y_minusculas(antes)) or cantidades):
+            continue
+        if _NO_APLICAR.search(_sin_tildes_y_minusculas(antes.split(",")[-1])):
+            continue  # "no hace falta aplicar atrazina"
+        tramo = transcripcion[desde:hasta]
+        momento = _MOMENTO_DICHO.search(tramo)
+        oracion = normalizar_texto(transcripcion[inicio_oracion:fin_oracion])
+        hibridos = [h for h in conocidos if normalizar_texto(h) and normalizar_texto(h) in oracion]
+        dosis, unidad = cantidades[0] if cantidades else (None, None)
+        ya_aplicado = bool(_YA_APLICADO.search(_sin_tildes_y_minusculas(tramo)))
+        agregadas.append((hibridos[0] if len(hibridos) == 1 else None, Aplicacion(
+            producto=identificado.producto,
+            principio_activo=identificado.principio_activo,
+            dosis=dosis,
+            unidad=unidad,
+            momento=momento.group(0) if momento else None,
+            estado=EstadoAplicacion.REALIZADA if ya_aplicado else EstadoAplicacion.RECOMENDADA,
+        )))
+        cubiertos |= claves
+    return agregadas
 
 
 def _texto_util(texto: str | None) -> str | None:
@@ -816,6 +1166,11 @@ async def extraer_recorrida(
 
     if menciona_observaciones(transcripcion):
         audio.combinar(_audio_desde_paso_3(await _pedir(config, 3, _prompt_paso_3(transcripcion))))
+
+    if menciona_aplicaciones(transcripcion, vocabulario):
+        nombres = [h.hibrido_variedad for h in audio.hibridos if h.hibrido_variedad]
+        paso4 = await _pedir(config, 4, _prompt_paso_4(transcripcion, nombres))
+        audio.combinar(_audio_desde_paso_4(paso4, transcripcion, nombres, vocabulario))
 
     audio.transcripcion_original = transcripcion
     return audio

@@ -122,9 +122,12 @@ async def test_paso_3_solo_si_menciona_umbral_acciones_o_comentarios():
         paso1={"hibridos": [{"hibrido_variedad": "9939", "stand_valor": 3}]},
         paso2={},
         paso3={"umbral_dano_economico": "superado", "acciones": "aplicar insecticida", "comentarios": "No hay comentarios"},
+        paso4={"aplicaciones": [{"producto": "insecticida"}]},
     )
     audio = await _extraer(falso, "el 9939 tiene 3 plantas. Hay que aplicar insecticida, el umbral está superado")
-    assert falso.pasos() == [1, 2, 3]
+    # "aplicar" también dispara el paso 4 (productos)
+    assert falso.pasos() == [1, 2, 3, 4]
+    assert [a.producto for a in audio.aplicaciones] == ["insecticida"]
     assert audio.umbral_dano_economico == UmbralDanoEconomico.SUPERADO
     assert audio.acciones == "aplicar insecticida"
     assert audio.comentarios is None  # relleno del modelo descartado

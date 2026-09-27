@@ -1,7 +1,7 @@
 """Cálculo de stand y formateo de las fichas legibles para Telegram."""
 from __future__ import annotations
 
-from .modelos import CabeceraLote, Hibrido, RecorridaAudio, etiqueta_material
+from .modelos import Aplicacion, CabeceraLote, EstadoAplicacion, Hibrido, RecorridaAudio, etiqueta_material, normalizar_texto
 
 NOMBRES_CAMPOS_CLAVE = {
     "localidad": "Localidad",
@@ -68,6 +68,39 @@ def _formatear_enfermedad(e) -> str:
     return " - ".join(partes)
 
 
+def _producto_con_activo(a: Aplicacion) -> str:
+    """'Roundup (glifosato)'; si el producto ya es el principio activo, solo 'glifosato'."""
+    if a.principio_activo and normalizar_texto(a.principio_activo) != normalizar_texto(a.producto):
+        return f"{a.producto} ({a.principio_activo})"
+    return a.producto
+
+
+def _dosis(a: Aplicacion) -> str:
+    if a.dosis is None:
+        return "dosis ❓"
+    return f"{_numero(a.dosis)} {a.unidad or ''}".strip()
+
+
+def formatear_aplicacion(a: Aplicacion) -> str:
+    """'A aplicar: Roundup (glifosato) 2 l/ha · para rama negra · en presiembra · caldo 80 l/ha'."""
+    partes = [f"{_producto_con_activo(a)} {_dosis(a)}"]
+    if a.objetivo:
+        partes.append(f"para {a.objetivo}")
+    if a.momento:
+        partes.append(a.momento)
+    if a.coadyuvante:
+        partes.append(f"+ {a.coadyuvante}")
+    if a.volumen_caldo is not None:
+        partes.append(f"caldo {_numero(a.volumen_caldo)} l/ha")
+    estado = "Ya aplicado" if a.estado == EstadoAplicacion.REALIZADA else "A aplicar"
+    return f"{estado}: " + " · ".join(partes)
+
+
+def _corto_aplicacion(a: Aplicacion) -> str:
+    texto = a.producto if a.dosis is None else f"{a.producto} {_dosis(a)}"
+    return texto + (" (ya aplicado)" if a.estado == EstadoAplicacion.REALIZADA else "")
+
+
 def _lineas_cabecera(cabecera: CabeceraLote) -> list[str]:
     lineas = [
         f"🗺️ Provincia: {cabecera.provincia or '—'}",
@@ -123,6 +156,9 @@ def formatear_hibrido(hibrido: Hibrido, numero: int, etiqueta: str = "híbrido")
     lineas.append(f"⚠️ Umbral de daño económico: {hibrido.umbral_dano_economico.value}")
     if hibrido.acciones:
         lineas.append(f"✅ Acciones a realizar: {hibrido.acciones}")
+    if hibrido.aplicaciones:
+        lineas.append("🧴 Productos:")
+        lineas.extend(f"  • {formatear_aplicacion(a)}" for a in hibrido.aplicaciones)
     if hibrido.comentarios:
         lineas.append(f"💬 Comentarios: {hibrido.comentarios}")
 
@@ -165,6 +201,12 @@ def formatear_borrador(
     if not audio.hibridos:
         lineas.append("")
         lineas.append(f"Todavía no hay ningún {singular} en el borrador.")
+        generales = _linea_generales(audio, con_productos=False)
+        if generales:
+            lineas.append(generales)
+        if audio.aplicaciones:
+            lineas.append("🧴 Productos para todo el lote:")
+            lineas.extend(f"  • {formatear_aplicacion(a)}" for a in audio.aplicaciones)
     for numero, hibrido in enumerate(audio.hibridos_efectivos(), start=1):
         lineas.append("")
         lineas.append(formatear_hibrido(hibrido, numero, singular))
@@ -233,12 +275,14 @@ def _linea_hibrido_compacta(numero: int, h: Hibrido, marca: str = "") -> str:
         partes.append(f"umbral {h.umbral_dano_economico.value}")
     if h.acciones:
         partes.append(f"acciones: {_recortar(h.acciones)}")
+    if h.aplicaciones:
+        partes.append("🧴 " + ", ".join(_corto_aplicacion(a) for a in h.aplicaciones))
     if h.comentarios:
         partes.append(f"💬 {_recortar(h.comentarios)}")
     return f"{numero}. {marca}{h.hibrido_variedad or 'sin nombre'} — " + " · ".join(partes)
 
 
-def _linea_generales(audio: RecorridaAudio) -> str:
+def _linea_generales(audio: RecorridaAudio, con_productos: bool = True) -> str:
     """Lo que el técnico dijo del lote entero (vale para los híbridos que no informaron lo suyo)."""
     partes = []
     for icono, items, corto, sin in (
@@ -250,6 +294,8 @@ def _linea_generales(audio: RecorridaAudio) -> str:
             partes.append(f"{icono} {_resumen_de_lista(items, corto, sin)}")
     if audio.acciones:
         partes.append(f"acciones: {_recortar(audio.acciones)}")
+    if audio.aplicaciones and con_productos:
+        partes.append("🧴 " + ", ".join(_corto_aplicacion(a) for a in audio.aplicaciones))
     if audio.comentarios:
         partes.append(f"💬 {_recortar(audio.comentarios)}")
     return ("🌐 Para todo el lote: " + " · ".join(partes)) if partes else ""

@@ -30,11 +30,32 @@ COLUMNAS_ORDEN = [
     "enfermedades",
     "umbral_dano_economico",
     "acciones",
+    "aplicaciones",
     "comentarios",
     "latitud",
     "longitud",
     "transcripcion_original",
 ]
+
+# hoja "Aplicaciones": un renglón por producto, con los datos de su recorrida
+COLUMNAS_APLICACIONES = {
+    "recorrida_id": "N° recorrida",
+    "fecha_hora": "Fecha",
+    "localidad": "Localidad",
+    "lote": "Lote",
+    "cultivo": "Cultivo",
+    "hibrido_variedad": "Híbrido/variedad",
+    "estado": "Estado",
+    "producto": "Producto",
+    "principio_activo": "Principio activo",
+    "dosis": "Dosis",
+    "unidad": "Unidad",
+    "objetivo": "Para",
+    "momento": "Momento",
+    "coadyuvante": "Coadyuvante",
+    "volumen_caldo": "Caldo (l/ha)",
+}
+_ESTADO_TEXTO = {"recomendada": "A aplicar", "realizada": "Ya aplicado"}
 
 
 def _aplanar_items(valor, campos: list[str], sin_presencia: bool = False) -> str:
@@ -58,6 +79,44 @@ def _aplanar_items(valor, campos: list[str], sin_presencia: bool = False) -> str
     return "; ".join(lineas)
 
 
+def _lista_json(valor) -> list[dict]:
+    items = json.loads(valor) if isinstance(valor, str) else valor
+    return list(items or [])
+
+
+def _aplanar_aplicaciones(valor) -> str:
+    """'A aplicar: Roundup (glifosato) 2 l/ha, para rama negra; Ya aplicado: atrazina 1 l/ha'."""
+    textos = []
+    for a in _lista_json(valor):
+        texto = str(a.get("producto", ""))
+        if a.get("principio_activo") and a["principio_activo"].lower() != texto.lower():
+            texto += f" ({a['principio_activo']})"
+        if a.get("dosis") is not None:
+            texto += f" {a['dosis']:g} {a.get('unidad') or ''}".rstrip()
+        extras = [f"para {a['objetivo']}" if a.get("objetivo") else "", a.get("momento") or "",
+                  f"+ {a['coadyuvante']}" if a.get("coadyuvante") else "",
+                  f"caldo {a['volumen_caldo']:g} l/ha" if a.get("volumen_caldo") is not None else ""]
+        texto = ", ".join([texto, *[e for e in extras if e]])
+        textos.append(f"{_ESTADO_TEXTO.get(a.get('estado'), 'A aplicar')}: {texto}")
+    return "; ".join(textos)
+
+
+def aplicaciones_a_dataframe(registros: list[dict]) -> pd.DataFrame:
+    """Un renglón por producto (recomendado o aplicado), para filtrar y sumar en Excel."""
+    filas = []
+    for r in registros:
+        for a in _lista_json(r.get("aplicaciones")):
+            filas.append({
+                "recorrida_id": r.get("id"),
+                "fecha_hora": _fecha_hora_argentina_sin_tz(r["fecha_hora"]),
+                **{c: r.get(c) for c in ("localidad", "lote", "cultivo", "hibrido_variedad")},
+                **{c: a.get(c) for c in ("producto", "principio_activo", "dosis", "unidad", "objetivo", "momento",
+                                         "coadyuvante", "volumen_caldo")},
+                "estado": _ESTADO_TEXTO.get(a.get("estado"), "A aplicar"),
+            })
+    return pd.DataFrame(filas, columns=list(COLUMNAS_APLICACIONES)).rename(columns=COLUMNAS_APLICACIONES)
+
+
 def _fecha_hora_argentina_sin_tz(fecha_hora: datetime) -> datetime:
     """Convierte a hora de Argentina y le quita el tzinfo (openpyxl no admite datetimes con zona horaria)."""
     if fecha_hora.tzinfo is None:
@@ -79,6 +138,7 @@ def registros_a_dataframe(registros: list[dict]) -> pd.DataFrame:
         fila["enfermedades"] = _aplanar_items(
             fila.get("enfermedades"), ["porcentaje_incidencia", "severidad"], bool(fila.get("sin_enfermedades"))
         )
+        fila["aplicaciones"] = _aplanar_aplicaciones(fila.get("aplicaciones"))
         filas.append(fila)
 
     df = pd.DataFrame(filas)
@@ -94,6 +154,9 @@ def generar_excel(registros: list[dict]) -> BytesIO:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Recorridas")
+        aplicaciones = aplicaciones_a_dataframe(registros)
+        if not aplicaciones.empty:
+            aplicaciones.to_excel(writer, index=False, sheet_name="Aplicaciones")
     buffer.seek(0)
     return buffer
 

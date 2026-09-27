@@ -98,6 +98,8 @@ ALTER TABLE recorridas ADD COLUMN IF NOT EXISTS sin_malezas BOOLEAN NOT NULL DEF
 ALTER TABLE recorridas ADD COLUMN IF NOT EXISTS sin_plagas BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE recorridas ADD COLUMN IF NOT EXISTS sin_enfermedades BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE recorridas ADD COLUMN IF NOT EXISTS visita_id INTEGER REFERENCES visitas(id);
+-- productos a aplicar o ya aplicados, con su dosis (lista de bot.modelos.Aplicacion)
+ALTER TABLE recorridas ADD COLUMN IF NOT EXISTS aplicaciones JSONB NOT NULL DEFAULT '[]';
 
 -- links de acceso al panel web (se guarda solo la huella del token, nunca el token)
 CREATE TABLE IF NOT EXISTS accesos_panel (
@@ -112,9 +114,9 @@ CREATE TABLE IF NOT EXISTS accesos_panel (
 CAMPOS_RECORRIDA_EDITABLES = (
     "provincia", "localidad", "lote", "cultivo", "ensayo", "tratamiento", "estadio_fenologico",
     "hibrido_variedad", "stand_valor", "estado_cultivo", "umbral_dano_economico", "acciones", "comentarios",
-    "malezas", "plagas", "enfermedades", "sin_malezas", "sin_plagas", "sin_enfermedades",
+    "malezas", "plagas", "enfermedades", "sin_malezas", "sin_plagas", "sin_enfermedades", "aplicaciones",
 )
-_CAMPOS_JSON = ("malezas", "plagas", "enfermedades")
+_CAMPOS_JSON = ("malezas", "plagas", "enfermedades", "aplicaciones")
 CAMPOS_LOTE_EDITABLES = ("nombre", "localidad", "cultivo_habitual", "ensayo_habitual")
 
 
@@ -141,8 +143,12 @@ class BaseDeDatos:
 
     @classmethod
     async def conectar_a(cls, database_url: str, admin_user_ids: list[int] | None = None) -> "BaseDeDatos":
-        """Como `conectar`, pero sin la configuración del bot (la usa el panel web)."""
-        pool = await asyncpg.create_pool(database_url)
+        """Como `conectar`, pero sin la configuración del bot (la usa el panel web).
+
+        Neon apaga la base a los 5 minutos sin uso y corta las conexiones abiertas: las que quedan
+        sin usar se cierran al minuto, así nunca se usa una conexión ya cortada (la próxima consulta
+        abre una nueva y despierta la base)."""
+        pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5, max_inactive_connection_lifetime=60)
         instancia = cls(pool)
         await instancia._migrar()
         await instancia._sembrar_admins(admin_user_ids or [])
@@ -387,14 +393,14 @@ class BaseDeDatos:
                     stand_valor, stand_unidad, estado_cultivo,
                     malezas, plagas, enfermedades, umbral_dano_economico,
                     acciones, comentarios, latitud, longitud, transcripcion_original,
-                    provincia, sin_malezas, sin_plagas, sin_enfermedades, visita_id
+                    provincia, sin_malezas, sin_plagas, sin_enfermedades, visita_id, aplicaciones
                 ) VALUES (
                     $1, $2, $3,
                     $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13,
                     $14, $15, $16, $17,
                     $18, $19, $20, $21, $22,
-                    $23, $24, $25, $26, $27
+                    $23, $24, $25, $26, $27, $28
                 )
                 RETURNING id
                 """,
@@ -425,6 +431,7 @@ class BaseDeDatos:
                 ficha.sin_plagas,
                 ficha.sin_enfermedades,
                 visita_id,
+                json.dumps([a.model_dump(mode="json") for a in ficha.aplicaciones]),
             )
             return fila["id"]
 

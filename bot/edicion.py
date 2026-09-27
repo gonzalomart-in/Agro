@@ -6,10 +6,11 @@ import json
 import math
 
 from . import catalogo as catalogo_mod
+from . import productos as productos_mod
 from .catalogo import EntradaCatalogo
 from .exportar import _fecha_hora_argentina_sin_tz
-from .ficha import _corto_enfermedad, _corto_maleza, _corto_plaga, _resumen_de_lista
-from .modelos import Enfermedad, Maleza, Plaga, UmbralDanoEconomico
+from .ficha import _corto_aplicacion, _corto_enfermedad, _corto_maleza, _corto_plaga, _resumen_de_lista
+from .modelos import Aplicacion, Enfermedad, EstadoAplicacion, Maleza, Plaga, UmbralDanoEconomico
 
 UMBRAL_TEXTO = {
     UmbralDanoEconomico.NO_EVALUADO.value: "No evaluado",
@@ -48,8 +49,30 @@ CAMPOS_ITEMS = {
 }
 _MODELO_ITEM = {"malezas": Maleza, "plagas": Plaga, "enfermedades": Enfermedad}
 _CORTO = {"malezas": _corto_maleza, "plagas": _corto_plaga, "enfermedades": _corto_enfermedad}
-_NUMERICOS = {"stand_valor", "porcentaje_cobertura", "cantidad_por_metro_lineal", "porcentaje_dano", "porcentaje_incidencia"}
-_TITULOS = {**COLUMNAS_RECORRIDA, **COLUMNAS_LOTE, **{c: t for campos in CAMPOS_ITEMS.values() for c, t in campos.items()}}
+
+# productos a aplicar o ya aplicados
+CAMPOS_APLICACION = {
+    "estado": "Estado",
+    "producto": "Producto",
+    "principio_activo": "Principio activo",
+    "dosis": "Dosis",
+    "unidad": "Unidad",
+    "objetivo": "Para",
+    "momento": "Momento",
+    "coadyuvante": "Coadyuvante",
+    "volumen_caldo": "Caldo (l/ha)",
+}
+ESTADO_TEXTO = {EstadoAplicacion.RECOMENDADA.value: "A aplicar", EstadoAplicacion.REALIZADA.value: "Ya aplicado"}
+UNIDADES_DOSIS = ["l/ha", "cc/ha", "g/ha", "kg/ha"]
+
+_NUMERICOS = {
+    "stand_valor", "porcentaje_cobertura", "cantidad_por_metro_lineal", "porcentaje_dano", "porcentaje_incidencia",
+    "dosis", "volumen_caldo",
+}
+_TITULOS = {
+    **COLUMNAS_RECORRIDA, **COLUMNAS_LOTE, **CAMPOS_APLICACION,
+    **{c: t for campos in CAMPOS_ITEMS.values() for c, t in campos.items()},
+}
 
 
 def _vacio(valor) -> bool:
@@ -73,6 +96,16 @@ def valor_limpio(campo: str, valor):
             if texto.lower() in (clave, etiqueta.lower()):
                 return clave
         raise ValueError(f"Umbral no válido: «{valor}». Opciones: {', '.join(UMBRAL_TEXTO.values())}.")
+    if campo == "estado":
+        if _vacio(valor):
+            return EstadoAplicacion.RECOMENDADA.value
+        texto = str(valor).strip()
+        for clave, etiqueta in ESTADO_TEXTO.items():
+            if texto.lower() in (clave, etiqueta.lower()):
+                return clave
+        raise ValueError(f"Estado no válido: «{valor}». Opciones: {', '.join(ESTADO_TEXTO.values())}.")
+    if campo == "unidad" and not _vacio(valor) and str(valor).strip() not in UNIDADES_DOSIS:
+        raise ValueError(f"Unidad no válida: «{valor}». Opciones: {', '.join(UNIDADES_DOSIS)}.")
     if _vacio(valor):
         return None
     if campo in _NUMERICOS:
@@ -100,6 +133,37 @@ def resumen_de(lista: str, valor, sin_presencia: bool) -> str:
     return _resumen_de_lista(items, _CORTO[lista], bool(sin_presencia))
 
 
+def resumen_aplicaciones(valor) -> str:
+    """'glifosato 2 l/ha, atrazina 1 l/ha (ya aplicado)' ('' si no hay ninguna)."""
+    return ", ".join(_corto_aplicacion(Aplicacion(**a)) for a in items_de(valor))
+
+
+def filas_de_aplicaciones(valor) -> list[dict]:
+    """Las aplicaciones de una recorrida como renglones de la tabla del panel."""
+    filas = []
+    for a in items_de(valor):
+        fila = {campo: a.get(campo) for campo in CAMPOS_APLICACION}
+        fila["estado"] = ESTADO_TEXTO.get(a.get("estado") or "", ESTADO_TEXTO[EstadoAplicacion.RECOMENDADA.value])
+        filas.append(fila)
+    return filas
+
+
+def aplicaciones_para_guardar(filas: list[dict]) -> list[dict]:
+    """Los renglones de la tabla de productos, validados. Si falta el principio activo, se busca
+    el producto en el registro de SENASA."""
+    aplicaciones = []
+    for fila in filas:
+        datos = {campo: valor_limpio(campo, fila.get(campo)) for campo in CAMPOS_APLICACION}
+        if datos["producto"] is None:
+            if any(v is not None for c, v in datos.items() if c != "estado"):
+                raise ValueError("En productos hay un renglón sin nombre de producto.")
+            continue
+        if datos["principio_activo"] is None:
+            datos["principio_activo"] = productos_mod.identificar(datos["producto"]).principio_activo
+        aplicaciones.append(Aplicacion(**datos).model_dump(mode="json"))
+    return aplicaciones
+
+
 def filas_de_recorridas(registros: list[dict], nombres: dict[int, str]) -> list[dict]:
     """Una fila por recorrida con lo que muestra la tabla del panel."""
     filas = []
@@ -114,6 +178,7 @@ def filas_de_recorridas(registros: list[dict], nombres: dict[int, str]) -> list[
         fila["umbral_dano_economico"] = UMBRAL_TEXTO.get(r.get("umbral_dano_economico") or "", "No evaluado")
         for lista in LISTAS:
             fila[lista] = resumen_de(lista, r.get(lista), r.get(f"sin_{lista}"))
+        fila["aplicaciones"] = resumen_aplicaciones(r.get("aplicaciones"))
         filas.append(fila)
     return filas
 
