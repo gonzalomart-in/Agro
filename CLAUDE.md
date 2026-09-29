@@ -25,10 +25,29 @@ El README explica el uso; este archivo explica **cómo trabajar sin romper nada*
   ```
 
   Probá ahí (con `..\Agro\.venv\Scripts\python.exe`, porque la copia no tiene su propio `.venv` ni el
-  `.env`), y recién cuando esté probado y lo aprueben, pasá los archivos a `Agro` y reiniciá.
+  `.env`), y recién cuando esté probado y lo aprueben, pasalo a `Agro` (ver abajo) y reiniciá.
 - **Reiniciar el bot o el panel:** cerrá su proceso `python` y `iniciar.bat` lo vuelve a abrir solo a
   los 15 segundos. Después comprobá que siguió vivo (si se corta, el `.bat` lo relanza con otro número
-  de proceso) y que el panel responde en `http://127.0.0.1:8501/_stcore/health`.
+  de proceso), que el bot se conectó a Telegram y que el panel responde en
+  `http://127.0.0.1:8501/_stcore/health`.
+
+## Un solo chat por vez, y al bot solo lo terminado
+
+A veces trabajan dos chats a la vez (por ejemplo, uno acá y otro en VS Code). El 27/9 uno copió a
+`Agro` archivos de una copia en la que el otro todavía estaba trabajando: `extraccion.py` ya usaba
+una función que `catalogo.py` todavía no tenía, y **el bot falló con casi todos los audios durante
+dos días**. Para que no vuelva a pasar:
+
+- **Un solo chat por vez cambia el código.** Antes de empezar, mirá `git worktree list` y la fecha de
+  los últimos cambios de cada copia (`Agro-trabajo`, etc.). Si alguna tiene cambios de hace poco sin
+  commitear, otro chat está trabajando: preguntá antes de tocar nada y no la uses.
+- **A `Agro` se pasa solo lo terminado, probado y commiteado**, nunca archivos sueltos de una copia
+  donde alguien sigue trabajando. Pasalo con git (cambiando `Agro` a la rama terminada), no copiando
+  archivos a mano, y **lo hace un solo chat**.
+- Después de pasarlo: corré los tests en `Agro`, reiniciá el bot y el panel, y comprobá que
+  arrancaron (ver arriba).
+- Si el bot responde "Ocurrió un error inesperado", corré los tests en `Agro`: una mezcla de versiones
+  se nota enseguida ahí.
 
 ## Comandos (Windows, PowerShell)
 
@@ -39,6 +58,8 @@ El README explica el uso; este archivo explica **cómo trabajar sin romper nada*
   - Extracción contra Ollama real: `.venv\Scripts\python.exe scripts\probar_extraccion.py`
   - Actualizar la lista de productos de SENASA: `.venv\Scripts\python.exe scripts\actualizar_productos_senasa.py`
 - La ruta tiene tilde (`Programación web`): poné siempre las rutas entre comillas.
+- Cuando un comando depende del anterior, encadenalos con `&&`, no con `;`: con `;` el segundo corre
+  aunque el primero haya fallado (así se pisó un archivo por error).
 - En PowerShell, `python -c "..."` con corchetes o comillas complicadas falla ("Missing type name
   after '['"), y un `foreach { } | ...` da "An empty pipe element is not allowed". Para algo de más
   de una línea, escribí un script `.py` en una carpeta temporal y corrélo.
@@ -60,6 +81,8 @@ El README explica el uso; este archivo explica **cómo trabajar sin romper nada*
   aislado, y borrá todo al terminar.
 - Neon apaga la base a los 5 minutos sin uso y corta las conexiones: el pool las cierra al minuto de
   no usarse y el panel reintenta una vez (`correr` en `panel.py`).
+- Las columnas `latitud` y `longitud` de `recorridas` quedan en la base, vacías y sin usar (el bot ya
+  no pide la ubicación). **No las borres**: así lo decidieron los usuarios.
 
 ## Cómo está armado
 
@@ -67,7 +90,8 @@ El README explica el uso; este archivo explica **cómo trabajar sin romper nada*
 |---|---|
 | `bot/bot.py` | Comandos de Telegram, audios, botones, guardar el borrador |
 | `bot/transcripcion.py` | Whisper (CPU, int8) con la pista de vocabulario |
-| `bot/extraccion.py` | Los 4 pasos con Ollama y las protecciones contra datos inventados |
+| `bot/extraccion.py` | Los pasos con Ollama y las protecciones contra datos inventados |
+| `bot/clientes.py` + `bot/lotes.py` | Catálogos de clientes (productor dueño del campo) y de lotes de cada técnico |
 | `bot/modelos.py` | `RecorridaAudio` (lo de un audio o el borrador), `Hibrido`, `Aplicacion`, `RecorridaCampo` (una fila) |
 | `bot/catalogo.py` | Vocabulario compartido: unificar nombres, pista de Whisper, arreglos de la transcripción |
 | `bot/vocabulario_base.py` | Vocabulario que el bot trae de fábrica |
@@ -82,8 +106,11 @@ El README explica el uso; este archivo explica **cómo trabajar sin romper nada*
   **una fila por híbrido**; lo dicho para todo el lote se copia a cada híbrido
   (`hibridos_efectivos`). Si no hay híbridos pero sí datos del lote, se guarda una sola fila sin híbrido.
 - Pasos de la extracción: (1) lote, híbridos, stand y estado, siempre; (2) malezas, plagas y
-  enfermedades; (3) umbral, acciones y comentarios; (4) productos y dosis. Los pasos 2 a 4 corren
-  solo si el texto los menciona (expresiones regulares `_PATRON_...` y `menciona_...`).
+  enfermedades; (3) umbral, acciones y comentarios; (4) productos y dosis; y uno aparte para el
+  cliente. Todos menos el 1 corren solo si el texto los menciona (expresiones regulares `_PATRON_...`
+  y `menciona_...`).
+- Si un audio nombra un lote distinto del que está en curso, el bot guarda lo pendiente del lote
+  anterior, lo cierra y sigue con el nuevo (`_cerrar_lote_anterior_si_corresponde` en `bot/bot.py`).
 
 ## Reglas de la extracción (el modelo es chico y se inventa cosas)
 
@@ -125,25 +152,37 @@ Apache 2.0. La lista de SENASA es pública; la guía de CASAFE no se puede copia
 La respuesta que manda el bot después de cada audio tiene que ser corta: la idea es agilizar la
 recorrida a campo, no entorpecerla con texto de más.
 
-- **Mostrar solo lo que el técnico dijo en ESE audio**, un dato por campo, formato
-  `Campo: valor` En diferntes lineas. Nada de íconos, ni bloques separados por híbrido, ni avisos de
-  "falta confirmar" o "no informado": si no se dijo, no se muestra. Ejemplo de un audio con una sola
-  variedad:
+- **Mostrar solo lo que el técnico dijo en ESE audio**, un dato por línea, formato `Campo: valor`.
+  Nada de íconos ni avisos de "falta confirmar" o "no informado": si no se dijo, no se muestra.
+- **Lo que está relacionado va en la misma línea:** la maleza con su tamaño en cm; la plaga con los
+  individuos por metro lineal y el % de daño; la enfermedad con la incidencia y la severidad. Ejemplo
+  de un audio con una sola variedad:
 
   ```
-  Localidad: Rancagua; Lote: El Remanso; Cultivo: soja; Ensayo: Comparativo de rendimiento (ECR);
-  Variedad: 46I20; Estadío fenológico: V2; Stand de plantas: 16 plantas por metro lineal;
-  Maleza: rama negra; Tamaño de maleza: 10cm; Enfermedades: mancha marrón; Incidencia: 10%;
-  Severidad: 10%; Plagas: bolillera; Daño de plantas: 20%
+  Localidad: Rancagua
+  Lote: El Remanso
+  Cultivo: soja
+  Ensayo: comparativo de rendimiento
+  Estadío fenológico: V2
+  Variedad: 46I20
+  Stand de plantas: 16 plantas por metro lineal
+  Maleza: rama negra - tamaño: 10 cm
+  Enfermedad: mancha marrón - incidencia: 10% - severidad: 10%
+  Plaga: oruga bolillera - daño: 20%
   ```
 
-- **En la base sí se guarda todo.** Los campos que no se mencionaron se cargan igual como "no se
-  mencionó" (o lo que ya use el esquema actual), para no perder la fila ni romper el Excel; eso es
-  solo para adentro, el técnico no lo necesita ver.
+- Si un audio nombra varios híbridos, lo dicho para todo el lote va una sola vez y cada híbrido
+  muestra solo lo suyo (separados por una línea en blanco).
+- **En la base sí se guarda todo.** Lo que no se mencionó queda **en blanco** (vacío); el técnico no
+  necesita verlo.
 - **Un lote puede recibir varios audios con variedades distintas**, uno por audio. Cada variedad
-  nueva que llega en un audio posterior tiene que quedar en su propia fila de la base aunque sea el
-  mismo lote (ya existe esta lógica con `hibridos_efectivos` en `bot/modelos.py`); el resumen de cada audio muestra solo lo de ese audio, no el acumulado de todo el lote. si se menciona un nuevo lote, cerrar el lote que quedo abierto y abrir el lote mencionado nuevo para cargar la info posterior, si no se menciona ningun lote continuar con el lote abierto en el ultimo audio donde se menciono un lote.
+  nueva que llega en un audio posterior queda en su propia fila de la base aunque sea el mismo lote
+  (`hibridos_efectivos` en `bot/modelos.py`); el resumen de cada audio muestra solo lo de ese audio,
+  no el acumulado de todo el lote.
+- **Si se nombra un lote nuevo, el lote anterior se guarda y se cierra solo**, y la información que
+  sigue va al lote nuevo. Esto es porque el bot es lento y muchas veces el botón de guardar llega
+  después de que ya empezó el audio del lote siguiente. Si no se nombra ningún lote, se sigue con el
+  último lote nombrado.
+- Los botones **Guardar / Ver borrador / Descartar** siguen abajo del resumen, como siempre.
 
-Esto es un cambio de criterio respecto de lo que arma hoy `bot/ficha.py` (`resumen_borrador`,
-`formatear_hibrido`, `formatear_cabecera`), que arma bloques con íconos y avisos de "falta" o "❓".
-Al implementarlo, simplificar esas funciones en vez de agregar un formato paralelo.
+Esto está en `resumen_simple` (`bot/ficha.py`). `/borrador` sigue mostrando el detalle completo.
